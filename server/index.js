@@ -82,8 +82,11 @@ app.post('/api/upload', upload.single('audio'), async (req, res) => {
       contentType: 'audio/webm',
       metadata: { voiceHash, uploadedAt: new Date().toISOString() },
     });
-    await file.makePublic();
-    const gcsUrl = `https://storage.googleapis.com/${process.env.GCS_BUCKET}/${filename}`;
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7日間有効
+    });
+    const gcsUrl = signedUrl;
 
     // Redisに永続保存
     await redis.set(`audio:${voiceHash}`, JSON.stringify({
