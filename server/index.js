@@ -31,6 +31,7 @@ const provider = new ethers.JsonRpcProvider(
   process.env.RPC_URL || 'https://sepolia.base.org'
 );
 const rawKey   = (process.env.PRIVATE_KEY || '').trim().replace(/^["']|["']$/g, '');
+console.log('[init] PRIVATE_KEY length:', rawKey.length, 'starts with 0x:', rawKey.startsWith('0x'));
 const wallet   = new ethers.Wallet(rawKey, provider);
 const contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, ABI, wallet);
 
