@@ -192,7 +192,7 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
 </div><!-- /mainContent -->
 
 <!-- 照合モーダル -->
-<div id="verifyModal" class="hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;display:flex;align-items:center;justify-content:center;z-index:999">
+<div id="verifyModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;align-items:center;justify-content:center;z-index:999">
   <div class="card" style="max-width:480px;width:90%;margin:0">
     <h2>声紋照合</h2>
     <div style="font-size:12px;color:#888;margin-bottom:8px">対象の発言: <span id="verifyTranscript" style="color:#e8c96e"></span></div>
@@ -683,10 +683,10 @@ async function startVerify(voiceHash, transcript) {
 
   const modal = document.getElementById('verifyModal');
   document.getElementById('verifyTranscript').textContent = transcript || '(なし)';
-  modal.classList.remove('hidden');
+  modal.style.display = 'flex';
 }
 function closeVerify() {
-  document.getElementById('verifyModal').classList.add('hidden');
+  document.getElementById('verifyModal').style.display = 'none';
   verifyTarget = null;
 }
 function toggleRecVerify(){ recVerify.toggle(); }
