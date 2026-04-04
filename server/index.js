@@ -10,6 +10,7 @@ import { Storage } from '@google-cloud/storage';
 import multer from 'multer';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app    = express();
@@ -91,7 +92,7 @@ app.post('/api/signup', async (req, res) => {
     const exists = await redis.get(`user:${email}`);
     if (exists) return res.status(409).json({ error: 'email already registered' });
     const hash = await bcrypt.hash(password, 10);
-    const userId = crypto.randomUUID();
+    const userId = randomUUID();
     await redis.set(`user:${email}`, JSON.stringify({ userId, email, passwordHash: hash }));
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '30d' });
     res.json({ token, email });
