@@ -79,6 +79,11 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
   font-size: 11px; color: #888;
 }
 .hidden { display: none; }
+.input { width:100%; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:10px; padding:11px 14px; color:#fff; font-size:14px; margin-top:8px; }
+.input:focus { outline:none; border-color:#5b8dee; }
+.btn-auth { background:linear-gradient(135deg,#5b8dee,#3a6bc9); color:#fff; margin-top:12px; }
+.auth-err { color:#ff6b6b; font-size:12px; margin-top:8px; min-height:16px; }
+.user-bar { background:#1a1a2e; border:1px solid #2a2a4a; border-radius:10px; padding:9px 14px; width:100%; max-width:540px; margin-bottom:12px; font-size:12px; color:#888; display:flex; justify-content:space-between; align-items:center; }
 </style>
 </head>
 <body>
@@ -86,6 +91,24 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
 <h1>🎙 VoiceProof</h1>
 <p class="sub">声紋 × ブロックチェーン — ¥300/回</p>
 
+<!-- 認証エリア -->
+<div id="authArea" class="card">
+  <h2 id="authTitle">LOGIN</h2>
+  <input class="input" type="email" id="authEmail" placeholder="メールアドレス">
+  <input class="input" type="password" id="authPassword" placeholder="パスワード">
+  <div class="auth-err" id="authErr"></div>
+  <button class="btn btn-auth" onclick="doLogin()">ログイン</button>
+  <button class="btn btn-sub" onclick="doSignup()" style="margin-top:8px">新規登録</button>
+</div>
+
+<!-- ログイン後のユーザーバー -->
+<div id="userBar" class="user-bar hidden">
+  <span id="userEmail"></span>
+  <button onclick="doLogout()" style="background:none;border:none;color:#e84393;cursor:pointer;font-size:12px">ログアウト</button>
+</div>
+
+<!-- メインコンテンツ（ログイン後に表示） -->
+<div id="mainContent" class="hidden">
 <div class="model-bar">🤖 <span id="modelStatus" style="color:#e8c96e">YAMNet 読み込み中...</span></div>
 
 <!-- STEP 1 録音 -->
@@ -166,20 +189,72 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
   <button class="btn btn-sub" onclick="loadRecords()" style="margin-bottom:12px">🔄 更新</button>
   <div id="recordsList"><span style="color:#444;font-size:13px">「更新」を押して読み込む</span></div>
 </div>
+</div><!-- /mainContent -->
 
 <script>
 // ══════════════════════════════════════════════════
 //  状態
 // ══════════════════════════════════════════════════
-let currentVoice    = null;   // { embedding, pitch, hash, transcript }
-let currentBlob     = null;   // 録音した音声blob
-let savedVoiceHash  = null;   // チェーンに保存済みのhash
-let savedEmbedding  = null;   // 認証比較用 embedding
+let currentVoice    = null;
+let currentBlob     = null;
+let savedVoiceHash  = null;
+let savedEmbedding  = null;
 let yamnet          = null;
 let modelReady      = false;
 let stripeInstance  = null;
 let stripeElements  = null;
 let paymentIntentId = null;
+let authToken       = localStorage.getItem('vp_token') || null;
+
+// ══════════════════════════════════════════════════
+//  認証
+// ══════════════════════════════════════════════════
+function apiFetch(url, opts={}) {
+  opts.headers = { ...(opts.headers||{}), 'Authorization': `Bearer ${authToken}` };
+  return fetch(url, opts);
+}
+function showMain(email) {
+  document.getElementById('authArea').classList.add('hidden');
+  document.getElementById('userBar').classList.remove('hidden');
+  document.getElementById('mainContent').classList.remove('hidden');
+  document.getElementById('userEmail').textContent = email;
+}
+async function doLogin() {
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const err = document.getElementById('authErr');
+  err.textContent = '';
+  const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
+  const data = await res.json();
+  if (data.error) { err.textContent = data.error; return; }
+  authToken = data.token;
+  localStorage.setItem('vp_token', authToken);
+  localStorage.setItem('vp_email', data.email);
+  showMain(data.email);
+}
+async function doSignup() {
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const err = document.getElementById('authErr');
+  err.textContent = '';
+  const res = await fetch('/api/signup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
+  const data = await res.json();
+  if (data.error) { err.textContent = data.error; return; }
+  authToken = data.token;
+  localStorage.setItem('vp_token', authToken);
+  localStorage.setItem('vp_email', data.email);
+  showMain(data.email);
+}
+function doLogout() {
+  authToken = null;
+  localStorage.removeItem('vp_token');
+  localStorage.removeItem('vp_email');
+  document.getElementById('authArea').classList.remove('hidden');
+  document.getElementById('userBar').classList.add('hidden');
+  document.getElementById('mainContent').classList.add('hidden');
+}
+// ページ読み込み時にトークンがあればそのまま表示
+if (authToken) showMain(localStorage.getItem('vp_email') || '');
 
 // ══════════════════════════════════════════════════
 //  YAMNet
@@ -368,7 +443,7 @@ const rec1=makeRecorder({wf:'wf1',btn:'rb1',st:'st1',tr:'tr1'},async(decoded,tra
     fd.append('audio', blob, 'voice.webm');
     fd.append('voiceHash', currentVoice.hash);
     fd.append('transcript', transcript);
-    const r=await fetch('/api/upload',{method:'POST',body:fd});
+    const r=await apiFetch('/api/upload',{method:'POST',body:fd});
     const d=await r.json();
     if(d.gcsUrl) currentVoice.gcsUrl=d.gcsUrl;
   } catch(e){ console.warn('upload failed:', e); }
@@ -544,7 +619,7 @@ async function loadRecords(){
   const el=document.getElementById('recordsList');
   el.innerHTML='<span style="color:#888;font-size:13px">読み込み中...</span>';
   try {
-    const res=await fetch('/api/records');
+    const res=await apiFetch('/api/records');
     const records=await res.json();
     if(!records.length){el.innerHTML='<span style="color:#444;font-size:13px">記録なし</span>';return;}
     el.innerHTML=records.map(r=>`

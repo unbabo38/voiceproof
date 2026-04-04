@@ -8,6 +8,8 @@ import Redis from 'ioredis';
 import rateLimit from 'express-rate-limit';
 import { Storage } from '@google-cloud/storage';
 import multer from 'multer';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app    = express();
@@ -68,15 +70,62 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
+// ── JWT ミドルウェア ──────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
+function authRequired(req, res, next) {
+  const token = (req.headers.authorization || '').replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'invalid token' });
+  }
+}
+
+// ── POST /api/signup ─────────────────────────────
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+    const exists = await redis.get(`user:${email}`);
+    if (exists) return res.status(409).json({ error: 'email already registered' });
+    const hash = await bcrypt.hash(password, 10);
+    const userId = crypto.randomUUID();
+    await redis.set(`user:${email}`, JSON.stringify({ userId, email, passwordHash: hash }));
+    const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, email });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/login ──────────────────────────────
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+    const raw = await redis.get(`user:${email}`);
+    if (!raw) return res.status(401).json({ error: 'invalid email or password' });
+    const user = JSON.parse(raw);
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'invalid email or password' });
+    const token = jwt.sign({ userId: user.userId, email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, email });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /api/upload ─────────────────────────────
 // 音声ファイルをGCSにアップロードしてURLを返す
-app.post('/api/upload', upload.single('audio'), async (req, res) => {
+app.post('/api/upload', authRequired, upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'audio file required' });
     const { voiceHash } = req.body;
     if (!voiceHash) return res.status(400).json({ error: 'voiceHash required' });
 
-    const filename = `${voiceHash}.webm`;
+    const filename = `${req.user.userId}/${voiceHash}.webm`;
     const file = bucket.file(filename);
     await file.save(req.file.buffer, {
       contentType: 'audio/webm',
@@ -86,16 +135,13 @@ app.post('/api/upload', upload.single('audio'), async (req, res) => {
       action: 'read',
       expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7日間有効
     });
-    const gcsUrl = signedUrl;
 
-    // Redisに永続保存
-    await redis.set(`audio:${voiceHash}`, JSON.stringify({
-      gcsUrl,
-      transcript: req.body.transcript || '',
-      uploadedAt: new Date().toISOString(),
-    }));
+    // Redisにユーザーごとに保存
+    const record = { gcsUrl: signedUrl, transcript: req.body.transcript || '', uploadedAt: new Date().toISOString(), voiceHash };
+    await redis.set(`audio:${req.user.userId}:${voiceHash}`, JSON.stringify(record));
+    await redis.lpush(`records:${req.user.userId}`, voiceHash);
 
-    res.json({ gcsUrl });
+    res.json({ gcsUrl: signedUrl });
   } catch(e) {
     console.error('/api/upload error:', e);
     res.status(500).json({ error: e.message });
@@ -161,25 +207,22 @@ app.post('/api/pay/dev', async (req, res) => {
 });
 
 // ── GET /api/records ─────────────────────────────────────
-app.get('/api/records', async (req, res) => {
+app.get('/api/records', authRequired, async (req, res) => {
   try {
-    const keys = await redis.keys('audio:*');
-    const records = await Promise.all(keys.map(async key => {
-      const raw = await redis.get(key);
+    const hashes = await redis.lrange(`records:${req.user.userId}`, 0, -1);
+    const records = await Promise.all(hashes.map(async voiceHash => {
+      const raw = await redis.get(`audio:${req.user.userId}:${voiceHash}`);
+      if (!raw) return null;
       const data = JSON.parse(raw);
-      const voiceHash = key.replace('audio:', '');
-      // チェーン上の記録も取得
       try {
         const hashBytes = toBytes32(voiceHash);
         const [valid, , blockTime] = await contract.verify(hashBytes);
-        data.voiceHash = voiceHash;
         data.onChain = valid;
         data.blockTime = blockTime > 0n ? new Date(Number(blockTime) * 1000).toISOString() : null;
       } catch { data.onChain = false; }
       return data;
     }));
-    records.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-    res.json(records);
+    res.json(records.filter(Boolean).sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt)));
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
