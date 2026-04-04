@@ -87,6 +87,7 @@ function authRequired(req, res, next) {
 // ── POST /api/signup ─────────────────────────────
 app.post('/api/signup', async (req, res) => {
   try {
+    console.log('[signup] body:', JSON.stringify(req.body));
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'email and password required' });
     const exists = await redis.get(`user:${email}`);
