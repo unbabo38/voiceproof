@@ -191,6 +191,21 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
 </div>
 </div><!-- /mainContent -->
 
+<!-- 照合モーダル -->
+<div id="verifyModal" class="hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:#0009;display:flex;align-items:center;justify-content:center;z-index:999">
+  <div class="card" style="max-width:480px;width:90%;margin:0">
+    <h2>声紋照合</h2>
+    <div style="font-size:12px;color:#888;margin-bottom:8px">対象の発言: <span id="verifyTranscript" style="color:#e8c96e"></span></div>
+    <canvas class="waveform" id="wfVerify"></canvas>
+    <button class="btn btn-rec" id="rbVerify" onclick="toggleRecVerify()">● 録音して照合</button>
+    <div class="status" id="stVerify"></div>
+    <div class="tlabel">TRANSCRIPT</div>
+    <div class="tbox" id="trVerify"><span style="color:#444">録音すると文字が出ます</span></div>
+    <div id="verifyResult"></div>
+    <button class="btn btn-sub" onclick="closeVerify()" style="margin-top:12px">閉じる</button>
+  </div>
+</div>
+
 <script>
 // ══════════════════════════════════════════════════
 //  状態
@@ -443,6 +458,7 @@ const rec1=makeRecorder({wf:'wf1',btn:'rb1',st:'st1',tr:'tr1'},async(decoded,tra
     fd.append('audio', blob, 'voice.webm');
     fd.append('voiceHash', currentVoice.hash);
     fd.append('transcript', transcript);
+    fd.append('embedding', JSON.stringify(currentVoice.embedding));
     const r=await apiFetch('/api/upload',{method:'POST',body:fd});
     const d=await r.json();
     if(d.gcsUrl) currentVoice.gcsUrl=d.gcsUrl;
@@ -629,11 +645,51 @@ async function loadRecords(){
         <div class="brow"><span class="bkey">VOICE HASH</span><span class="bval green">${r.voiceHash?.slice(0,20)}...</span></div>
         ${r.transcript?`<div class="brow"><span class="bkey">発言内容</span><span class="bval">${r.transcript}</span></div>`:''}
         ${r.gcsUrl?`<div class="brow"><span class="bkey">音声</span><span class="bval link" onclick="window.open('${r.gcsUrl}')">▶ 再生</span></div>`:''}
+        <button class="btn btn-sub" style="margin-top:8px;font-size:12px" onclick="startVerify('${r.voiceHash}','${r.transcript||''}')">🔍 この記録と声を照合する</button>
+        <div id="verify-${r.voiceHash}" style="margin-top:8px"></div>
       </div>`).join('');
   } catch(e){
     el.innerHTML=`<span style="color:#ff6b6b;font-size:13px">エラー: ${e.message}</span>`;
   }
 }
+
+let verifyTarget = null;
+const recVerify = makeRecorder({wf:'wfVerify',btn:'rbVerify',st:'stVerify',tr:'trVerify'}, async decoded => {
+  const voice = await extractVoice(decoded);
+  if (!voice || !verifyTarget) return;
+  const sim = cosine(verifyTarget.embedding, voice.embedding);
+  const pct = (sim * 100).toFixed(1);
+  const thr = modelReady ? 0.80 : 0.82;
+  const ok = sim >= thr;
+  const el = document.getElementById('verifyResult');
+  el.innerHTML = `
+    <div class="field" style="margin-top:8px">
+      <div class="flabel">判定</div>
+      <div class="fval big">${ok?'✅ 一致 <span class="badge ok">同一話者</span>':'❌ 不一致 <span class="badge ng">別の話者</span>'}</div>
+    </div>
+    <div class="field">
+      <div class="flabel">声紋類似度</div>
+      <div style="font-size:20px;font-weight:700;margin:5px 0">${pct}%</div>
+      <div class="sim-bg"><div class="sim-fill" style="width:${Math.min(pct,100)}%"></div></div>
+    </div>`;
+  document.getElementById('rbVerify').textContent = '● もう一度試す';
+});
+
+async function startVerify(voiceHash, transcript) {
+  const res = await apiFetch(`/api/embedding/${voiceHash}`);
+  const data = await res.json();
+  if (data.error) { alert('embeddingが保存されていません（古い記録）'); return; }
+  verifyTarget = { embedding: data.embedding, voiceHash, transcript };
+
+  const modal = document.getElementById('verifyModal');
+  document.getElementById('verifyTranscript').textContent = transcript || '(なし)';
+  modal.classList.remove('hidden');
+}
+function closeVerify() {
+  document.getElementById('verifyModal').classList.add('hidden');
+  verifyTarget = null;
+}
+function toggleRecVerify(){ recVerify.toggle(); }
 </script>
 </body>
 </html>

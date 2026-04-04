@@ -138,8 +138,14 @@ app.post('/api/upload', authRequired, upload.single('audio'), async (req, res) =
       expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7日間有効
     });
 
-    // Redisにユーザーごとに保存
-    const record = { gcsUrl: signedUrl, transcript: req.body.transcript || '', uploadedAt: new Date().toISOString(), voiceHash };
+    // Redisにユーザーごとに保存（embeddingも含む）
+    const record = {
+      gcsUrl: signedUrl,
+      transcript: req.body.transcript || '',
+      uploadedAt: new Date().toISOString(),
+      voiceHash,
+      embedding: req.body.embedding ? JSON.parse(req.body.embedding) : null,
+    };
     await redis.set(`audio:${req.user.userId}:${voiceHash}`, JSON.stringify(record));
     await redis.lpush(`records:${req.user.userId}`, voiceHash);
 
@@ -235,6 +241,15 @@ app.get('/api/status/:id', async (req, res) => {
   const raw = await redis.get(`results:${req.params.id}`);
   if (!raw) return res.json({ status: 'pending' });
   res.json({ status: 'confirmed', ...JSON.parse(raw) });
+});
+
+// ── GET /api/embedding/:hash ─────────────────────────────
+app.get('/api/embedding/:hash', authRequired, async (req, res) => {
+  const raw = await redis.get(`audio:${req.user.userId}:${req.params.hash}`);
+  if (!raw) return res.status(404).json({ error: 'not found' });
+  const { embedding } = JSON.parse(raw);
+  if (!embedding) return res.status(404).json({ error: 'embedding not saved' });
+  res.json({ embedding });
 });
 
 // ── GET /api/proof/:hash ─────────────────────────────────
