@@ -165,6 +165,7 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
 //  状態
 // ══════════════════════════════════════════════════
 let currentVoice    = null;   // { embedding, pitch, hash, transcript }
+let currentBlob     = null;   // 録音した音声blob
 let savedVoiceHash  = null;   // チェーンに保存済みのhash
 let savedEmbedding  = null;   // 認証比較用 embedding
 let yamnet          = null;
@@ -322,13 +323,13 @@ function makeRecorder({wf,btn,st,tr},onStop){
     document.getElementById(btn).disabled=true;
     document.getElementById(st).textContent='処理中...';
     mr.onstop=async()=>{
-      const decoded=await new AudioContext().decodeAudioData(
-        await new Blob(chunks,{type:'audio/webm'}).arrayBuffer());
+      const blob=new Blob(chunks,{type:'audio/webm'});
+      const decoded=await new AudioContext().decodeAudioData(await blob.arrayBuffer());
       document.getElementById(tr).textContent=ft.trim()||'(認識できませんでした)';
       document.getElementById(st).textContent='完了';
       document.getElementById(btn).disabled=false;
       document.getElementById(btn).classList.remove('on');
-      await onStop(decoded,ft.trim());
+      await onStop(decoded,ft.trim(),blob);
     };
   }
   function draw(){
@@ -346,15 +347,30 @@ function makeRecorder({wf,btn,st,tr},onStop){
 // ══════════════════════════════════════════════════
 //  STEP 1 録音
 // ══════════════════════════════════════════════════
-const rec1=makeRecorder({wf:'wf1',btn:'rb1',st:'st1',tr:'tr1'},async(decoded,transcript)=>{
+const rec1=makeRecorder({wf:'wf1',btn:'rb1',st:'st1',tr:'tr1'},async(decoded,transcript,blob)=>{
   document.getElementById('st1').textContent='特徴抽出中...';
   currentVoice=await extractVoice(decoded);
   if(!currentVoice) return;
   currentVoice.transcript=transcript;
+  currentBlob=blob;
+
+  // GCSにアップロード
+  document.getElementById('st1').textContent='音声をアップロード中...';
+  try {
+    const fd=new FormData();
+    fd.append('audio', blob, 'voice.webm');
+    fd.append('voiceHash', currentVoice.hash);
+    fd.append('transcript', transcript);
+    const r=await fetch('/api/upload',{method:'POST',body:fd});
+    const d=await r.json();
+    if(d.gcsUrl) currentVoice.gcsUrl=d.gcsUrl;
+  } catch(e){ console.warn('upload failed:', e); }
+
   document.getElementById('rHash').textContent=currentVoice.hash;
   document.getElementById('rPitch').textContent=
     currentVoice.pitch>0?`${currentVoice.pitch.toFixed(1)} Hz`:'無声';
   document.getElementById('voiceResult').classList.remove('hidden');
+  document.getElementById('st1').textContent='完了';
   document.getElementById('rb1').textContent='● もう一度録音';
 });
 function toggleRec1(){rec1.toggle();}

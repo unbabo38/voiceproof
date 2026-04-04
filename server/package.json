@@ -5,14 +5,16 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "dev":   "node --watch index.js"
+    "dev": "node --watch index.js"
   },
   "dependencies": {
-    "dotenv":             "^16.4.0",
-    "ethers":             "^6.11.0",
-    "express":            "^4.19.0",
+    "@google-cloud/storage": "^7.19.0",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.11.0",
+    "express": "^4.19.0",
     "express-rate-limit": "^7.4.0",
-    "ioredis":            "^5.3.0",
-    "stripe":             "^14.21.0"
+    "ioredis": "^5.3.0",
+    "multer": "^2.1.1",
+    "stripe": "^14.21.0"
   }
 }
