@@ -101,6 +101,23 @@ app.post('/api/pay', payLimiter, async (req, res) => {
   }
 });
 
+// ── POST /api/pay/dev ────────────────────────────────────
+// Stripe スキップ用テストエンドポイント
+app.post('/api/pay/dev', async (req, res) => {
+  try {
+    const { voiceHash, timestamp } = req.body;
+    if (!voiceHash) return res.status(400).json({ error: 'voiceHash required' });
+    const intentId = 'dev_' + Date.now();
+    await submitToChain(intentId, { voiceHash, timestamp, latitude: 0, longitude: 0 });
+    const raw = await redis.get(`results:${intentId}`);
+    if (!raw) return res.status(500).json({ error: 'chain write failed' });
+    res.json({ paymentIntentId: intentId, ...JSON.parse(raw) });
+  } catch(e) {
+    console.error('/api/pay/dev error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/status/:id ──────────────────────────────────
 app.get('/api/status/:id', async (req, res) => {
   const raw = await redis.get(`results:${req.params.id}`);
