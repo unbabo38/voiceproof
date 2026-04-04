@@ -160,6 +160,31 @@ app.post('/api/pay/dev', async (req, res) => {
   }
 });
 
+// ── GET /api/records ─────────────────────────────────────
+app.get('/api/records', async (req, res) => {
+  try {
+    const keys = await redis.keys('audio:*');
+    const records = await Promise.all(keys.map(async key => {
+      const raw = await redis.get(key);
+      const data = JSON.parse(raw);
+      const voiceHash = key.replace('audio:', '');
+      // チェーン上の記録も取得
+      try {
+        const hashBytes = toBytes32(voiceHash);
+        const [valid, , blockTime] = await contract.verify(hashBytes);
+        data.voiceHash = voiceHash;
+        data.onChain = valid;
+        data.blockTime = blockTime > 0n ? new Date(Number(blockTime) * 1000).toISOString() : null;
+      } catch { data.onChain = false; }
+      return data;
+    }));
+    records.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+    res.json(records);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/status/:id ──────────────────────────────────
 app.get('/api/status/:id', async (req, res) => {
   const raw = await redis.get(`results:${req.params.id}`);

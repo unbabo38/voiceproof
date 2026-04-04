@@ -160,6 +160,13 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
   </div>
 </div>
 
+<!-- 過去の記録 -->
+<div class="card" style="margin-top:14px">
+  <h2>過去の記録</h2>
+  <button class="btn btn-sub" onclick="loadRecords()" style="margin-bottom:12px">🔄 更新</button>
+  <div id="recordsList"><span style="color:#444;font-size:13px">「更新」を押して読み込む</span></div>
+</div>
+
 <script>
 // ══════════════════════════════════════════════════
 //  状態
@@ -529,6 +536,29 @@ const rec2=makeRecorder({wf:'wf2',btn:'rb2',st:'st2',tr:'tr2'},async decoded=>{
   document.getElementById('rb2').textContent='● もう一度試す';
 });
 function toggleRec2(){rec2.toggle();}
+
+// ══════════════════════════════════════════════════
+//  過去の記録
+// ══════════════════════════════════════════════════
+async function loadRecords(){
+  const el=document.getElementById('recordsList');
+  el.innerHTML='<span style="color:#888;font-size:13px">読み込み中...</span>';
+  try {
+    const res=await fetch('/api/records');
+    const records=await res.json();
+    if(!records.length){el.innerHTML='<span style="color:#444;font-size:13px">記録なし</span>';return;}
+    el.innerHTML=records.map(r=>`
+      <div class="block-box" style="margin-bottom:10px">
+        <div class="block-title">${r.onChain?'✅ オンチェーン記録あり':'⏳ チェーン未確認'}</div>
+        <div class="brow"><span class="bkey">日時</span><span class="bval">${r.blockTime?new Date(r.blockTime).toLocaleString('ja-JP'):new Date(r.uploadedAt).toLocaleString('ja-JP')}</span></div>
+        <div class="brow"><span class="bkey">VOICE HASH</span><span class="bval green">${r.voiceHash?.slice(0,20)}...</span></div>
+        ${r.transcript?`<div class="brow"><span class="bkey">発言内容</span><span class="bval">${r.transcript}</span></div>`:''}
+        ${r.gcsUrl?`<div class="brow"><span class="bkey">音声</span><span class="bval link" onclick="window.open('${r.gcsUrl}')">▶ 再生</span></div>`:''}
+      </div>`).join('');
+  } catch(e){
+    el.innerHTML=`<span style="color:#ff6b6b;font-size:13px">エラー: ${e.message}</span>`;
+  }
+}
 </script>
 </body>
 </html>
