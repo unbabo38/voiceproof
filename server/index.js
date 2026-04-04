@@ -53,7 +53,7 @@ app.post('/api/webhook',
   handleWebhook
 );
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '..')));  // index.html を配信
+app.use(express.static(path.join(__dirname, 'public')));  // index.html を配信
 
 // ── GET /health ──────────────────────────────────
 app.get('/health', (_req, res) => {

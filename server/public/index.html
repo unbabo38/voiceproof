@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>VoiceProof</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+<script src="https://js.stripe.com/v3/"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Helvetica Neue', sans-serif;
+  background: #0d0d1a; color: #fff;
+  min-height: 100vh;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 40px 20px;
+}
+h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px; }
+.sub { color: #888; font-size: 12px; margin-bottom: 28px; }
+.card {
+  background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 16px;
+  padding: 22px; width: 100%; max-width: 540px; margin-bottom: 14px;
+}
+.card h2 { font-size: 11px; color: #888; letter-spacing: 2px; margin-bottom: 14px; text-transform: uppercase; }
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 14px; border-radius: 12px; border: none;
+  font-size: 15px; font-weight: 600; cursor: pointer; transition: .15s;
+}
+.btn:active  { transform: scale(0.98); }
+.btn:disabled { opacity: 0.35; cursor: default; transform: none; }
+.btn-rec   { background: linear-gradient(135deg,#e84393,#c0392b); color: #fff; }
+.btn-rec.on { animation: pulse 1s infinite; }
+.btn-pay   { background: linear-gradient(135deg,#e8c96e,#f39c12); color: #0d0d1a; margin-top: 12px; }
+.btn-sub   { background: #2a2a4a; color: #ccc; margin-top: 10px; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.7} }
+
+.waveform  { width: 100%; height: 50px; border-radius: 8px; background: #0d0d1a; margin-bottom: 12px; }
+.field     { background: #0d0d1a; border-radius: 10px; padding: 11px 14px; margin-top: 9px; }
+.flabel    { font-size: 10px; color: #5b8dee; letter-spacing: 1px; margin-bottom: 5px; }
+.fval      { font-family: monospace; font-size: 12px; color: #e8c96e; word-break: break-all; }
+.fval.green { color: #5dde8b; }
+.fval.big   { font-size: 22px; font-weight: 700; color: #fff; }
+.fval.link  { color: #5b8dee; cursor: pointer; text-decoration: underline; }
+.tbox {
+  background: #0d0d1a; border: 1px solid #2a2a4a; border-radius: 10px;
+  padding: 11px 14px; min-height: 42px; font-size: 14px; line-height: 1.6; color: #e0e0e0; margin-top: 9px;
+}
+.interim { color: #555; font-style: italic; }
+.tlabel  { font-size: 10px; color: #5b8dee; letter-spacing: 1px; margin-top: 11px; }
+.status  { font-size: 12px; color: #888; text-align: center; margin: 7px 0; min-height: 16px; }
+
+/* Stripe Element */
+#stripe-form { margin-top: 14px; display: none; }
+#payment-element { background: #0d0d1a; border-radius: 10px; padding: 14px; }
+#stripe-error  { color: #ff6b6b; font-size: 12px; margin-top: 8px; min-height: 16px; }
+
+/* ブロック表示 */
+.block-box {
+  background: #0d0d1a; border: 1px solid #5dde8b44; border-radius: 12px;
+  padding: 16px; margin-top: 12px;
+}
+.block-title { font-size: 11px; color: #5dde8b; letter-spacing: 1px; margin-bottom: 10px; }
+.brow { display: flex; gap: 8px; margin-top: 6px; }
+.bkey { font-size: 10px; color: #555; min-width: 100px; padding-top: 1px; }
+.bval { font-family: monospace; font-size: 11px; color: #aaa; word-break: break-all; }
+.bval.gold  { color: #e8c96e; }
+.bval.green { color: #5dde8b; }
+
+/* 認証結果 */
+.sim-bg   { background: #0d0d1a; border-radius: 6px; height: 10px; overflow: hidden; margin-top: 5px; }
+.sim-fill { height: 100%; border-radius: 6px; transition: width .7s; background: linear-gradient(90deg,#e84393,#5dde8b); }
+.badge    { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; margin-left: 8px; }
+.badge.ok { background: #1a3a1a; color: #5dde8b; border: 1px solid #5dde8b44; }
+.badge.ng { background: #3a1a1a; color: #ff6b6b; border: 1px solid #ff6b6b44; }
+
+.model-bar {
+  background: #111; border: 1px solid #2a2a4a; border-radius: 10px;
+  padding: 9px 14px; width: 100%; max-width: 540px; margin-bottom: 12px;
+  font-size: 11px; color: #888;
+}
+.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h1>🎙 VoiceProof</h1>
+<p class="sub">声紋 × ブロックチェーン — ¥300/回</p>
+
+<div class="model-bar">🤖 <span id="modelStatus" style="color:#e8c96e">YAMNet 読み込み中...</span></div>
+
+<!-- STEP 1 録音 -->
+<div class="card">
+  <h2>STEP 1 — 声を録音</h2>
+  <canvas class="waveform" id="wf1"></canvas>
+  <button class="btn btn-rec" id="rb1" onclick="toggleRec1()">● 録音開始</button>
+  <div class="status" id="st1">マイクのアクセスを許可してください</div>
+  <div class="tlabel">TRANSCRIPT</div>
+  <div class="tbox" id="tr1"><span style="color:#444">録音すると文字が出ます</span></div>
+
+  <div id="voiceResult" class="hidden">
+    <div class="field">
+      <div class="flabel">VOICE HASH</div>
+      <div class="fval" id="rHash">—</div>
+    </div>
+    <div class="field">
+      <div class="flabel">PITCH</div>
+      <div class="fval" id="rPitch">—</div>
+    </div>
+
+    <!-- 決済 -->
+    <button class="btn btn-pay" id="payBtn" onclick="startPayment()">
+      ⛓ ¥300 でブロックチェーンに記録する
+    </button>
+    <div id="stripe-error" style="color:#ff6b6b;font-size:12px;margin-top:8px;min-height:16px"></div>
+    <button class="btn btn-sub" id="devPayBtn" onclick="devPay()" style="margin-top:8px">
+      🔧 テスト決済 (Stripe スキップ)
+    </button>
+
+    <!-- Stripe フォーム -->
+    <div id="stripe-form">
+      <div id="payment-element"></div>
+      <button class="btn btn-pay" id="confirmBtn" onclick="confirmPayment()" style="margin-top:10px">
+        💳 支払いを確定する
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- STEP 2 ブロック確認 -->
+<div class="card hidden" id="blockCard">
+  <h2>STEP 2 — オンチェーン記録</h2>
+  <div id="blockContent"></div>
+</div>
+
+<!-- STEP 3 認証 -->
+<div class="card hidden" id="authCard">
+  <h2>STEP 3 — 声で認証</h2>
+  <p style="font-size:12px;color:#888;margin-bottom:12px">同じ声 → VALID、別の声 → REJECTED</p>
+  <canvas class="waveform" id="wf2"></canvas>
+  <button class="btn btn-rec" id="rb2" onclick="toggleRec2()">● 認証用に録音</button>
+  <div class="status" id="st2"></div>
+  <div class="tlabel">TRANSCRIPT</div>
+  <div class="tbox" id="tr2"><span style="color:#444">録音すると文字が出ます</span></div>
+
+  <div id="authResult" class="hidden" style="margin-top:14px">
+    <div class="field">
+      <div class="flabel">判定</div>
+      <div class="fval big" id="authVerdict">—</div>
+    </div>
+    <div class="field">
+      <div class="flabel">声紋類似度</div>
+      <div style="font-size:20px;font-weight:700;margin:5px 0" id="authPct">—</div>
+      <div class="sim-bg"><div class="sim-fill" id="authBar" style="width:0%"></div></div>
+      <div style="font-size:11px;color:#555;margin-top:4px" id="authDetail">—</div>
+    </div>
+    <div class="field">
+      <div class="flabel">チェーン検証</div>
+      <div class="fval" id="authChain">—</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════
+//  状態
+// ══════════════════════════════════════════════════
+let currentVoice    = null;   // { embedding, pitch, hash, transcript }
+let savedVoiceHash  = null;   // チェーンに保存済みのhash
+let savedEmbedding  = null;   // 認証比較用 embedding
+let yamnet          = null;
+let modelReady      = false;
+let stripeInstance  = null;
+let stripeElements  = null;
+let paymentIntentId = null;
+
+// ══════════════════════════════════════════════════
+//  YAMNet
+// ══════════════════════════════════════════════════
+(async () => {
+  const el = document.getElementById('modelStatus');
+  try {
+    await tf.ready();
+    yamnet = await tf.loadGraphModel(
+      'https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1',
+      { fromTFHub: true }
+    );
+    const d = tf.zeros([16000]);
+    const o = yamnet.predict(d);
+    (Array.isArray(o) ? o : [o]).forEach(t => t.dispose());
+    d.dispose();
+    modelReady = true;
+    el.textContent = '✅ YAMNet 読み込み完了 (1024次元)';
+    el.style.color  = '#5dde8b';
+  } catch(e) {
+    el.textContent = '⚠️ MFCC フォールバック';
+    el.style.color  = '#e84393';
+  }
+})();
+
+// ══════════════════════════════════════════════════
+//  音声処理 (FFT / MFCC / YAMNet / Pitch)
+// ══════════════════════════════════════════════════
+function fft(re, im) {
+  const n = re.length;
+  for (let i=1,j=0;i<n;i++){
+    let b=n>>1; for(;j&b;b>>=1)j^=b; j^=b;
+    if(i<j){[re[i],re[j]]=[re[j],re[i]];[im[i],im[j]]=[im[j],im[i]];}
+  }
+  for(let l=2;l<=n;l<<=1){
+    const a=-2*Math.PI/l, wR=Math.cos(a), wI=Math.sin(a);
+    for(let i=0;i<n;i+=l){
+      let cR=1,cI=0;
+      for(let j=0;j<l/2;j++){
+        const uR=re[i+j],uI=im[i+j];
+        const vR=re[i+j+l/2]*cR-im[i+j+l/2]*cI;
+        const vI=re[i+j+l/2]*cI+im[i+j+l/2]*cR;
+        re[i+j]=uR+vR;im[i+j]=uI+vI;
+        re[i+j+l/2]=uR-vR;im[i+j+l/2]=uI-vI;
+        [cR,cI]=[cR*wR-cI*wI,cR*wI+cI*wR];
+      }
+    }
+  }
+}
+function mfccFrame(frame,sr,nM,nC){
+  const re=frame.map((v,i)=>v*(0.54-0.46*Math.cos(2*Math.PI*i/(frame.length-1))));
+  const im=new Array(frame.length).fill(0); fft(re,im);
+  const pw=re.slice(0,frame.length/2).map((r,i)=>r*r+im[i]*im[i]);
+  const hM=hz=>2595*Math.log10(1+hz/700),mH=m=>700*(Math.pow(10,m/2595)-1);
+  const mn=hM(80),mx=hM(8000),st=(mx-mn)/(nM+1);
+  const cc=Array.from({length:nM+2},(_,i)=>mH(mn+st*i));
+  const me=new Float32Array(nM);
+  for(let m=0;m<nM;m++) for(let k=0;k<pw.length;k++){
+    const f=k*sr/frame.length; let w=0;
+    if(f>=cc[m]&&f<=cc[m+1]) w=(f-cc[m])/(cc[m+1]-cc[m]);
+    else if(f>cc[m+1]&&f<=cc[m+2]) w=(cc[m+2]-f)/(cc[m+2]-cc[m+1]);
+    me[m]+=pw[k]*w;
+  }
+  const lg=Array.from(me).map(v=>Math.log(Math.max(v,1e-10)));
+  return Array.from({length:nC},(_,k)=>lg.reduce((s,v,m)=>s+v*Math.cos(Math.PI*k*(m+.5)/nM),0));
+}
+function extractPitch(data,sr){
+  const fSz=2048,hop=1024,minL=Math.floor(sr/350),maxL=Math.floor(sr/60),pts=[];
+  for(let s=0;s+fSz<=data.length;s+=hop){
+    const fr=data.slice(s,s+fSz);
+    let mC=0,bL=-1,en=0;
+    for(let i=0;i<fSz;i++) en+=fr[i]*fr[i];
+    for(let lag=minL;lag<=maxL;lag++){let c=0;for(let i=0;i<fSz-lag;i++)c+=fr[i]*fr[i+lag];if(c>mC){mC=c;bL=lag;}}
+    if(bL>0&&mC/(en+1e-10)>0.1) pts.push(sr/bL);
+  }
+  if(!pts.length) return 0;
+  pts.sort((a,b)=>a-b); return pts[Math.floor(pts.length/2)];
+}
+async function resample16k(buf){
+  const oc=new OfflineAudioContext(1,Math.ceil(buf.duration*16000),16000);
+  const s=oc.createBufferSource(); s.buffer=buf; s.connect(oc.destination); s.start();
+  return oc.startRendering();
+}
+async function extractVoice(audioBuf){
+  const data=audioBuf.getChannelData(0), pitch=extractPitch(data,audioBuf.sampleRate);
+  let embedding;
+  if(modelReady){
+    const b16=await resample16k(audioBuf);
+    embedding=tf.tidy(()=>{
+      const w=tf.tensor1d(b16.getChannelData(0)),o=yamnet.predict(w);
+      return (Array.isArray(o)?o[1]:o).mean(0).arraySync();
+    });
+  } else {
+    const sr=audioBuf.sampleRate,d=audioBuf.getChannelData(0),fSz=1024,hop=512,nM=40,nC=13,fr=[];
+    for(let i=0;i+fSz<=d.length;i+=hop) fr.push(Array.from(d.slice(i,i+fSz)));
+    if(!fr.length) return null;
+    const ls=fr.map(f=>mfccFrame(f,sr,nM,nC));
+    const mn=new Float32Array(nC),sd=new Float32Array(nC);
+    for(const m of ls) for(let i=0;i<nC;i++) mn[i]+=m[i];
+    for(let i=0;i<nC;i++) mn[i]/=ls.length;
+    for(const m of ls) for(let i=0;i<nC;i++) sd[i]+=(m[i]-mn[i])**2;
+    for(let i=0;i<nC;i++) sd[i]=Math.sqrt(sd[i]/ls.length);
+    embedding=Array.from(new Float32Array([...mn,...sd]));
+  }
+  const bytes=new Uint8Array(new Float32Array(embedding).buffer);
+  const hashBuf=await crypto.subtle.digest('SHA-256',bytes.buffer);
+  const hash=Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  return { embedding, pitch, hash, usedYAMNet: modelReady };
+}
+function cosine(a,b){
+  let d=0,na=0,nb=0;
+  for(let i=0;i<a.length;i++){d+=a[i]*b[i];na+=a[i]**2;nb+=b[i]**2;}
+  return d/(Math.sqrt(na)*Math.sqrt(nb)+1e-10);
+}
+
+// ══════════════════════════════════════════════════
+//  録音ユーティリティ
+// ══════════════════════════════════════════════════
+function makeSR(onUpdate){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR) return null;
+  const r=new SR(); r.lang='ja-JP'; r.continuous=true; r.interimResults=true;
+  r.onresult=e=>{
+    let f='',interim='';
+    for(const res of e.results) res.isFinal?f+=res[0].transcript:interim+=res[0].transcript;
+    onUpdate(f,interim);
+  };
+  r.onerror=()=>{}; return r;
+}
+function makeRecorder({wf,btn,st,tr},onStop){
+  let rec=false,mr,ac,an,af,chunks=[],sr=null,ft='';
+  async function start(){
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    ac=new AudioContext(); an=ac.createAnalyser(); an.fftSize=256;
+    ac.createMediaStreamSource(stream).connect(an);
+    mr=new MediaRecorder(stream); chunks=[]; mr.ondataavailable=e=>chunks.push(e.data);
+    mr.start(); rec=true; ft='';
+    document.getElementById(tr).innerHTML='<span class="interim">聞き取り中...</span>';
+    sr=makeSR((f,interim)=>{ft=f;document.getElementById(tr).innerHTML=f+(interim?`<span class="interim">${interim}</span>`:'');});
+    if(sr) sr.start();
+    document.getElementById(btn).classList.add('on');
+    document.getElementById(st).textContent='録音中...';
+    draw();
+  }
+  async function stop(){
+    rec=false; cancelAnimationFrame(af); mr.stop();
+    if(sr){sr.stop();sr=null;}
+    document.getElementById(btn).disabled=true;
+    document.getElementById(st).textContent='処理中...';
+    mr.onstop=async()=>{
+      const decoded=await new AudioContext().decodeAudioData(
+        await new Blob(chunks,{type:'audio/webm'}).arrayBuffer());
+      document.getElementById(tr).textContent=ft.trim()||'(認識できませんでした)';
+      document.getElementById(st).textContent='完了';
+      document.getElementById(btn).disabled=false;
+      document.getElementById(btn).classList.remove('on');
+      await onStop(decoded,ft.trim());
+    };
+  }
+  function draw(){
+    if(!rec) return; af=requestAnimationFrame(draw);
+    const c=document.getElementById(wf),ctx=c.getContext('2d');
+    const d=new Uint8Array(an.frequencyBinCount); an.getByteTimeDomainData(d);
+    ctx.fillStyle='#0d0d1a'; ctx.fillRect(0,0,c.width,c.height);
+    ctx.lineWidth=2; ctx.strokeStyle='#e84393'; ctx.beginPath();
+    d.forEach((v,i)=>{const x=i/d.length*c.width,y=(v/128-1)*c.height/2+c.height/2;i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+    ctx.stroke();
+  }
+  return {toggle:()=>rec?stop():start()};
+}
+
+// ══════════════════════════════════════════════════
+//  STEP 1 録音
+// ══════════════════════════════════════════════════
+const rec1=makeRecorder({wf:'wf1',btn:'rb1',st:'st1',tr:'tr1'},async(decoded,transcript)=>{
+  document.getElementById('st1').textContent='特徴抽出中...';
+  currentVoice=await extractVoice(decoded);
+  if(!currentVoice) return;
+  currentVoice.transcript=transcript;
+  document.getElementById('rHash').textContent=currentVoice.hash;
+  document.getElementById('rPitch').textContent=
+    currentVoice.pitch>0?`${currentVoice.pitch.toFixed(1)} Hz`:'無声';
+  document.getElementById('voiceResult').classList.remove('hidden');
+  document.getElementById('rb1').textContent='● もう一度録音';
+});
+function toggleRec1(){rec1.toggle();}
+
+// ══════════════════════════════════════════════════
+//  STEP 2 決済 → チェーン保存
+// ══════════════════════════════════════════════════
+async function startPayment(){
+  if(!currentVoice) return;
+  const btn=document.getElementById('payBtn');
+  btn.disabled=true; btn.textContent='決済画面を準備中...';
+
+  try {
+    const res=await fetch('/api/pay',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        voiceHash:  currentVoice.hash,
+        timestamp:  Math.floor(Date.now()/1000),
+        transcript: currentVoice.transcript||'',
+        pitch:      Math.round(currentVoice.pitch||0),
+      })
+    });
+    const data=await res.json();
+    if(data.error) throw new Error(data.error);
+
+    paymentIntentId=data.paymentIntentId;
+    savedEmbedding=currentVoice.embedding;
+    savedVoiceHash=currentVoice.hash;
+
+    stripeInstance=Stripe(data.publishableKey);
+    stripeElements=stripeInstance.elements({clientSecret:data.clientSecret,locale:'ja'});
+    const el=stripeElements.create('payment');
+    el.mount('#payment-element');
+    document.getElementById('stripe-form').style.display='block';
+    btn.textContent='⛓ ¥300 でブロックチェーンに記録する';
+    btn.disabled=false;
+  } catch(e){
+    document.getElementById('stripe-error').textContent=e.message;
+    btn.disabled=false; btn.textContent='⛓ ¥300 でブロックチェーンに記録する';
+  }
+}
+
+async function confirmPayment(){
+  const btn=document.getElementById('confirmBtn');
+  btn.disabled=true; btn.textContent='処理中...';
+  document.getElementById('stripe-error').textContent='';
+
+  const {error}=await stripeInstance.confirmPayment({
+    elements: stripeElements,
+    confirmParams: { return_url: location.href },
+    redirect: 'if_required',
+  });
+
+  if(error){
+    document.getElementById('stripe-error').textContent=error.message;
+    btn.disabled=false; btn.textContent='💳 支払いを確定する';
+    return;
+  }
+  btn.textContent='⏳ チェーンに書き込み中...';
+  await pollResult(paymentIntentId);
+}
+
+// テストモード: Stripe スキップ
+async function devPay(){
+  if(!currentVoice) return;
+  const btn=document.getElementById('devPayBtn');
+  btn.disabled=true; btn.textContent='⏳ チェーンに書き込み中...';
+  savedEmbedding=currentVoice.embedding;
+  savedVoiceHash=currentVoice.hash;
+
+  const res=await fetch('/api/pay/dev',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      voiceHash: currentVoice.hash,
+      timestamp: Math.floor(Date.now()/1000),
+    })
+  });
+  const data=await res.json();
+  if(data.error){alert(data.error);btn.disabled=false;btn.textContent='🔧 テスト決済 (Stripe スキップ)';return;}
+  paymentIntentId=data.paymentIntentId;
+  showBlock(data);
+}
+
+async function pollResult(id,tries=0){
+  if(tries>30){document.getElementById('stripe-error').textContent='タイムアウト';return;}
+  const res=await fetch(`/api/status/${id}`);
+  const data=await res.json();
+  if(data.status==='confirmed') showBlock(data);
+  else setTimeout(()=>pollResult(id,tries+1),2000);
+}
+
+function showBlock(data){
+  document.getElementById('stripe-form').style.display='none';
+  document.getElementById('devPayBtn').style.display='none';
+  document.getElementById('payBtn').textContent='✅ 記録済み';
+  document.getElementById('payBtn').disabled=true;
+
+  const time=data.confirmedAt?new Date(data.confirmedAt).toLocaleString('ja-JP'):'—';
+  document.getElementById('blockContent').innerHTML=`
+    <div class="block-box">
+      <div class="block-title">✅ BLOCK CONFIRMED</div>
+      <div class="brow"><span class="bkey">TX HASH</span>
+        <span class="bval gold">${data.txHash||'(dev mode)'}</span></div>
+      <div class="brow"><span class="bkey">BLOCK</span>
+        <span class="bval">#${data.blockNumber||'—'}</span></div>
+      <div class="brow"><span class="bkey">VOICE HASH</span>
+        <span class="bval green">${savedVoiceHash}</span></div>
+      <div class="brow"><span class="bkey">CONFIRMED AT</span>
+        <span class="bval">${time}</span></div>
+      ${data.explorerUrl?`<div class="brow"><span class="bkey">EXPLORER</span>
+        <span class="bval link" onclick="window.open('${data.explorerUrl}')">${data.explorerUrl.slice(0,50)}...</span></div>`:''}
+    </div>`;
+
+  document.getElementById('blockCard').classList.remove('hidden');
+  document.getElementById('authCard').classList.remove('hidden');
+  document.getElementById('blockCard').scrollIntoView({behavior:'smooth'});
+}
+
+// ══════════════════════════════════════════════════
+//  STEP 3 認証
+// ══════════════════════════════════════════════════
+const rec2=makeRecorder({wf:'wf2',btn:'rb2',st:'st2',tr:'tr2'},async decoded=>{
+  const voice=await extractVoice(decoded);
+  if(!voice||!savedEmbedding) return;
+
+  // 1. 声紋類似度
+  const sim=cosine(savedEmbedding,voice.embedding);
+  const pct=(sim*100).toFixed(1);
+  const thr=modelReady?0.80:0.82;
+  const ok=sim>=thr;
+
+  // 2. チェーン上の記録を検証
+  let chainStatus='—';
+  try{
+    const res=await fetch(`/api/proof/${savedVoiceHash}`);
+    const data=await res.json();
+    chainStatus=data.valid
+      ?`<span style="color:#5dde8b">✅ オンチェーン記録あり (${data.blockTimeISO?.slice(0,19)||''})</span>`
+      :`<span style="color:#ff6b6b">❌ チェーンに記録なし</span>`;
+  } catch {
+    chainStatus='<span style="color:#888">サーバーに接続できません</span>';
+  }
+
+  document.getElementById('authVerdict').innerHTML=
+    ok?`✅ VALID <span class="badge ok">認証成功</span>`
+      :`❌ REJECTED <span class="badge ng">別の話者</span>`;
+  document.getElementById('authPct').textContent=pct+'%';
+  document.getElementById('authBar').style.width=Math.min(pct,100)+'%';
+  document.getElementById('authDetail').textContent=
+    `[${voice.usedYAMNet?'YAMNet 1024次元':'MFCC 26次元'}] `
+    +`閾値 ${(thr*100)}% / 基準 ${Math.round(savedEmbedding.pitch||0)}Hz → 今回 ${voice.pitch.toFixed(0)}Hz`;
+  document.getElementById('authChain').innerHTML=chainStatus;
+  document.getElementById('authResult').classList.remove('hidden');
+  document.getElementById('rb2').textContent='● もう一度試す';
+});
+function toggleRec2(){rec2.toggle();}
+</script>
+</body>
+</html>
