@@ -16,6 +16,86 @@ import Foundation
 import CryptoKit
 import CoreLocation
 
+// MARK: - サーバー通信
+
+/// verify-speaker / enroll の結果
+struct SpeakerVerificationResult {
+    let isAuthentic:  Bool
+    let similarity:   Double
+    let threshold:    Double
+    let sampleCount:  Int
+    let detail:       String
+}
+
+enum VoiceProofAPI {
+
+    static var baseURL: String = "https://your-server.railway.app"  // ← 環境に合わせて変更
+    static var jwtToken: String = ""                                  // ← ログイン後にセット
+
+    // MARK: 声紋登録
+    /// iOS の VoiceprintResult を /api/enroll に送信する
+    static func enroll(result: VoiceprintResult) async throws -> (sampleCount: Int, message: String) {
+        let embedding = result.meanMFCC + result.stdMFCC   // 26次元
+        return try await _post(
+            path: "/api/enroll",
+            body: ["embedding": embedding],
+            parse: { json in
+                let count   = json["sampleCount"] as? Int    ?? 0
+                let message = json["message"]     as? String ?? ""
+                return (count, message)
+            }
+        )
+    }
+
+    // MARK: 話者認証
+    /// 録音した音声が登録済みの本人かを確認する
+    /// - Returns: SpeakerVerificationResult
+    static func verifySpeaker(result: VoiceprintResult) async throws -> SpeakerVerificationResult {
+        let embedding = result.meanMFCC + result.stdMFCC
+        return try await _post(
+            path: "/api/verify-speaker",
+            body: ["embedding": embedding],
+            parse: { json in
+                SpeakerVerificationResult(
+                    isAuthentic: json["isAuthentic"] as? Bool   ?? false,
+                    similarity:  json["similarity"]  as? Double ?? 0,
+                    threshold:   json["threshold"]   as? Double ?? 0,
+                    sampleCount: json["sampleCount"] as? Int    ?? 0,
+                    detail:      json["detail"]      as? String ?? ""
+                )
+            }
+        )
+    }
+
+    // MARK: 内部: POST ヘルパー
+    private static func _post<T>(
+        path: String,
+        body: [String: Any],
+        parse: @escaping ([String: Any]) throws -> T
+    ) async throws -> T {
+        guard let url = URL(string: baseURL + path) else {
+            throw URLError(.badURL)
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json",    forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(jwtToken)",  forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw URLError(.cannotParseResponse)
+        }
+        if !(200..<300).contains(http.statusCode) {
+            let msg = json["error"] as? String ?? "HTTP \(http.statusCode)"
+            throw NSError(domain: "VoiceProofAPI", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+        return try parse(json)
+    }
+}
+
 // MARK: - メッセージ証明パッケージ
 
 struct VoiceProofPackage: Codable {
@@ -98,6 +178,36 @@ enum VoiceProofBuilder {
         )
     }
 
+    // MARK: 認証付きパッケージ生成
+
+    /// 話者認証を通過した場合のみ VoiceProofPackage を返す
+    ///
+    /// - Throws: `VoiceProofError.speakerMismatch` — 声紋が登録済みと一致しない
+    /// - Throws: `VoiceProofError.notEnrolled`    — 声紋が未登録
+    static func buildWithVerification(
+        voiceprintResult: VoiceprintResult,
+        message:          String,
+        location:         CLLocation? = nil
+    ) async throws -> (package: VoiceProofPackage, verification: SpeakerVerificationResult) {
+
+        let verification = try await VoiceProofAPI.verifySpeaker(result: voiceprintResult)
+
+        guard verification.isAuthentic else {
+            throw VoiceProofError.speakerMismatch(
+                similarity: verification.similarity,
+                threshold:  verification.threshold,
+                detail:     verification.detail
+            )
+        }
+
+        let package = build(
+            voiceprintResult: voiceprintResult,
+            message:          message,
+            location:         location
+        )
+        return (package, verification)
+    }
+
     // MARK: 改ざん検知
 
     /// 既存パッケージのどこが変わったかを特定して返す
@@ -162,6 +272,22 @@ enum VoiceProofBuilder {
     }
 }
 
+// MARK: - エラー型
+
+enum VoiceProofError: LocalizedError {
+    case speakerMismatch(similarity: Double, threshold: Double, detail: String)
+    case notEnrolled
+
+    var errorDescription: String? {
+        switch self {
+        case .speakerMismatch(let sim, let thr, let detail):
+            return "声紋が一致しません (類似度: \(Int(sim*100))% < 閾値 \(Int(thr*100))%) — \(detail)"
+        case .notEnrolled:
+            return "声紋が未登録です。先に登録を完了してください"
+        }
+    }
+}
+
 // MARK: - 改ざんレポート
 
 struct TamperingReport {
@@ -190,19 +316,36 @@ enum TamperingIssue {
 // MARK: - 使用例
 
 /*
+ // ── 声紋登録 (初回・複数回実行で精度向上) ──
+ VoiceProofAPI.baseURL  = "https://your-server.railway.app"
+ VoiceProofAPI.jwtToken = authToken   // ログイン後のJWT
+
  let recorder = VoiceprintRecorder()
  recorder.onComplete = { voiceprint in
-
-     let package = VoiceProofBuilder.build(
-         voiceprintResult: voiceprint,
-         message: "昨日、渋谷で彼女とデートした",
-         location: locationManager.location
-     )
-     // → package.proofID をコントラクトに書き込む
-     print(package.summary)
-     // VoiceProof[a3f9c2e14b8d...] @ 2026-04-03T10:00:00Z
+     Task {
+         let (count, msg) = try await VoiceProofAPI.enroll(result: voiceprint)
+         print("登録完了: \(msg) (サンプル数: \(count))")
+     }
  }
  try recorder.startRecording()
- // ... 数秒後 ...
- recorder.stopRecording()
+
+ // ── 認証付き証明パッケージ生成 ──
+ recorder.onComplete = { voiceprint in
+     Task {
+         do {
+             let (package, verification) = try await VoiceProofBuilder.buildWithVerification(
+                 voiceprintResult: voiceprint,
+                 message: "昨日、渋谷で彼女とデートした",
+                 location: locationManager.location
+             )
+             // verification.similarity → 0.94 など
+             // package.proofID をコントラクトに書き込む
+             print(package.summary)
+             // VoiceProof[a3f9c2e14b8d...] @ 2026-04-03T10:00:00Z
+
+         } catch VoiceProofError.speakerMismatch(let sim, _, _) {
+             print("声紋不一致 (類似度: \(Int(sim*100))%) — 別の話者か偽音声の疑い")
+         }
+     }
+ }
 */

@@ -252,6 +252,101 @@ app.get('/api/embedding/:hash', authRequired, async (req, res) => {
   res.json({ embedding });
 });
 
+// ── POST /api/enroll ──────────────────────────────────────
+// 声紋を登録する (embedding は iOS MFCCExtractor が生成した配列)
+// 複数回登録すると平均ベクトルで更新される (少なくとも3回推奨)
+app.post('/api/enroll', authRequired, async (req, res) => {
+  try {
+    const { embedding } = req.body;
+    if (!Array.isArray(embedding) || embedding.length === 0)
+      return res.status(400).json({ error: 'embedding (array) required' });
+
+    const key = `voiceprint:${req.user.userId}`;
+    const existing = await redis.get(key);
+
+    let stored;
+    if (existing) {
+      // 既存の登録声紋と平均を取り移動平均で更新
+      const prev = JSON.parse(existing);
+      const count = prev.count + 1;
+      const avg = prev.vector.map((v, i) => (v * prev.count + embedding[i]) / count);
+      stored = { vector: avg, count, updatedAt: new Date().toISOString() };
+    } else {
+      stored = { vector: embedding, count: 1, updatedAt: new Date().toISOString() };
+    }
+
+    await redis.set(key, JSON.stringify(stored));
+
+    res.json({
+      enrolled: true,
+      sampleCount: stored.count,
+      message: stored.count < 3
+        ? `登録完了 (精度向上のためあと${3 - stored.count}回の登録を推奨します)`
+        : '声紋登録が完了しました',
+    });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/verify-speaker ──────────────────────────────
+// 提出された embedding が登録済み声紋と同一人物かを判定する
+// 認証済みでも未認証ユーザーの声紋確認にも使えるよう subject_id を受け取る設計
+app.post('/api/verify-speaker', authRequired, async (req, res) => {
+  try {
+    const { embedding, subjectId } = req.body;
+    if (!Array.isArray(embedding) || embedding.length === 0)
+      return res.status(400).json({ error: 'embedding (array) required' });
+
+    // subjectId 未指定なら自分自身の声紋と比較
+    const targetId = subjectId || req.user.userId;
+    const raw = await redis.get(`voiceprint:${targetId}`);
+    if (!raw) return res.status(404).json({ error: '声紋が未登録です。先に /api/enroll を実行してください' });
+
+    const { vector: registered, count: sampleCount } = JSON.parse(raw);
+
+    if (registered.length !== embedding.length)
+      return res.status(400).json({ error: `次元数が一致しません (登録: ${registered.length}, 提出: ${embedding.length})` });
+
+    const similarity = cosineSimilarity(registered, embedding);
+    const THRESHOLD  = 0.82; // 実測調整推奨
+    const isAuthentic = similarity >= THRESHOLD;
+
+    res.json({
+      isAuthentic,
+      similarity:   Math.round(similarity * 10000) / 10000,
+      threshold:    THRESHOLD,
+      sampleCount,
+      detail: isAuthentic
+        ? `本人の声と確認されました (類似度: ${(similarity * 100).toFixed(1)}%)`
+        : `声紋が一致しません (類似度: ${(similarity * 100).toFixed(1)}% < 閾値 ${(THRESHOLD * 100).toFixed(0)}%)`,
+    });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/voiceprint/status ────────────────────────────
+// 声紋の登録状況を確認する
+app.get('/api/voiceprint/status', authRequired, async (req, res) => {
+  const raw = await redis.get(`voiceprint:${req.user.userId}`);
+  if (!raw) return res.json({ enrolled: false });
+  const { count, updatedAt } = JSON.parse(raw);
+  res.json({ enrolled: true, sampleCount: count, updatedAt, ready: count >= 3 });
+});
+
+// ── コサイン類似度 ────────────────────────────────────────
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot   += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : Math.max(0, Math.min(1, dot / denom));
+}
+
 // ── GET /api/proof/:hash ─────────────────────────────────
 app.get('/api/proof/:hash', async (req, res) => {
   try {
