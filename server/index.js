@@ -252,6 +252,86 @@ app.get('/api/embedding/:hash', authRequired, async (req, res) => {
   res.json({ embedding });
 });
 
+// ── GET /api/auth/challenge ───────────────────────────────
+// ログイン時に読み上げさせるランダム文字列を発行する
+// 有効期限: 90秒。期限切れ or 未使用なら verify で弾く
+const CHALLENGE_WORDS = [
+  'さくら','うみ','かぜ','ひかり','つき','ほし','やま','かわ','もり','そら',
+  'あさ','ゆき','はな','くも','なみ','とり','いわ','いけ','みず','たに',
+];
+
+function makeChallenge() {
+  const pick = () => CHALLENGE_WORDS[Math.floor(Math.random() * CHALLENGE_WORDS.length)];
+  const num  = String(Math.floor(1000 + Math.random() * 9000));
+  return `${pick()} ${num} ${pick()}`;   // 例: "さくら 7429 ながれ"
+}
+
+app.get('/api/auth/challenge', async (req, res) => {
+  const challengeId = randomUUID();
+  const text        = makeChallenge();
+  await redis.set(`challenge:${challengeId}`, text, 'EX', 90);  // 90秒有効
+  res.json({ challengeId, text, expiresIn: 90 });
+});
+
+// ── POST /api/auth/verify ─────────────────────────────────
+// チャレンジ文字列を読んだ音声で声紋認証 → JWT 発行
+app.post('/api/auth/verify', async (req, res) => {
+  try {
+    const { challengeId, embedding, transcript, email } = req.body;
+    if (!challengeId || !Array.isArray(embedding) || !email)
+      return res.status(400).json({ error: 'challengeId, embedding, email が必要です' });
+
+    // 1. チャレンジの有効性確認
+    const expectedText = await redis.get(`challenge:${challengeId}`);
+    if (!expectedText)
+      return res.status(401).json({ error: 'チャレンジが無効または期限切れです (90秒以内に読み上げてください)' });
+
+    // 2. テキスト一致チェック (数字部分は必須、単語はゆらぎを許容)
+    const expectedNum = expectedText.match(/\d+/)?.[0] ?? '';
+    const actualNum   = (transcript ?? '').replace(/\s/g, '').match(/\d+/)?.[0] ?? '';
+    if (expectedNum && actualNum !== expectedNum)
+      return res.status(401).json({
+        error: `読み上げ内容が一致しません (期待: "${expectedText}")`,
+        hint:  '画面の文字列をそのまま読み上げてください',
+      });
+
+    // 3. 声紋認証
+    const userRaw = await redis.get(`user:${email}`);
+    if (!userRaw) return res.status(404).json({ error: 'ユーザーが見つかりません' });
+    const { userId } = JSON.parse(userRaw);
+
+    const vpRaw = await redis.get(`voiceprint:${userId}`);
+    if (!vpRaw)
+      return res.status(401).json({ error: '声紋が未登録です。先に /api/enroll を完了してください' });
+
+    const { vector: registered, count: sampleCount } = JSON.parse(vpRaw);
+    const similarity = cosineSimilarity(registered, embedding);
+    const THRESHOLD  = 0.82;
+
+    // 使用済みチャレンジは即削除 (リプレイ攻撃防止)
+    await redis.del(`challenge:${challengeId}`);
+
+    if (similarity < THRESHOLD)
+      return res.status(401).json({
+        error:      `声紋が一致しません (類似度: ${(similarity * 100).toFixed(1)}%)`,
+        similarity: Math.round(similarity * 10000) / 10000,
+        threshold:  THRESHOLD,
+      });
+
+    // 4. JWT 発行
+    const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({
+      token,
+      email,
+      similarity:  Math.round(similarity * 10000) / 10000,
+      sampleCount,
+      message:     `声紋認証成功 (類似度: ${(similarity * 100).toFixed(1)}%)`,
+    });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /api/enroll ──────────────────────────────────────
 // 声紋を登録する (embedding は iOS MFCCExtractor が生成した配列)
 // 複数回登録すると平均ベクトルで更新される (少なくとも3回推奨)

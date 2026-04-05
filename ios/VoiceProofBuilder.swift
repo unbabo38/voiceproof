@@ -32,6 +32,49 @@ enum VoiceProofAPI {
     static var baseURL: String = "https://your-server.railway.app"  // ← 環境に合わせて変更
     static var jwtToken: String = ""                                  // ← ログイン後にセット
 
+    // MARK: チャレンジ取得
+    /// ログイン画面で「この文字列を読んでください」と表示するテキストを取得する
+    static func fetchChallenge() async throws -> (challengeId: String, text: String, expiresIn: Int) {
+        guard let url = URL(string: baseURL + "/api/auth/challenge") else { throw URLError(.badURL) }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw URLError(.cannotParseResponse)
+        }
+        return (
+            challengeId: json["challengeId"] as? String ?? "",
+            text:        json["text"]        as? String ?? "",
+            expiresIn:   json["expiresIn"]   as? Int    ?? 90
+        )
+    }
+
+    // MARK: チャレンジ声紋認証 → JWT 取得
+    /// チャレンジ文字列を読んだ録音で声紋認証し、成功したら JWT を返す
+    static func verifyChallenge(
+        challengeId: String,
+        result:      VoiceprintResult,
+        transcript:  String,
+        email:       String
+    ) async throws -> String {   // JWT token
+        let embedding = result.meanMFCC + result.stdMFCC
+        return try await _post(
+            path: "/api/auth/verify",
+            body: [
+                "challengeId": challengeId,
+                "embedding":   embedding,
+                "transcript":  transcript,
+                "email":       email,
+            ],
+            parse: { json in
+                guard let token = json["token"] as? String else {
+                    let msg = json["error"] as? String ?? "認証失敗"
+                    throw NSError(domain: "VoiceProofAPI", code: 401,
+                                  userInfo: [NSLocalizedDescriptionKey: msg])
+                }
+                return token
+            }
+        )
+    }
+
     // MARK: 声紋登録
     /// iOS の VoiceprintResult を /api/enroll に送信する
     static func enroll(result: VoiceprintResult) async throws -> (sampleCount: Int, message: String) {
