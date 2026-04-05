@@ -85,18 +85,47 @@ function authRequired(req, res, next) {
 }
 
 // ── POST /api/signup ─────────────────────────────
+// アカウント登録と同時に声紋を取得する
+// 事前に GET /api/auth/challenge でチャレンジを取得し、読み上げた音声の embedding を送る
 app.post('/api/signup', async (req, res) => {
   try {
-    console.log('[signup] body:', JSON.stringify(req.body));
-    const { email, password } = req.body;
+    const { email, password, embedding, challengeId, transcript } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+    if (!Array.isArray(embedding) || embedding.length === 0)
+      return res.status(400).json({ error: 'embedding required — 声紋の登録が必要です' });
+    if (!challengeId)
+      return res.status(400).json({ error: 'challengeId required — GET /api/auth/challenge で取得してください' });
+
+    // チャレンジ検証
+    const expectedText = await redis.get(`challenge:${challengeId}`);
+    if (!expectedText)
+      return res.status(401).json({ error: 'チャレンジが無効または期限切れです' });
+
+    const expectedNum = expectedText.match(/\d+/)?.[0] ?? '';
+    const actualNum   = (transcript ?? '').replace(/\s/g, '').match(/\d+/)?.[0] ?? '';
+    if (expectedNum && actualNum !== expectedNum)
+      return res.status(401).json({ error: `読み上げ内容が一致しません (期待: "${expectedText}")` });
+
+    await redis.del(`challenge:${challengeId}`);
+
+    // ユーザー重複チェック
     const exists = await redis.get(`user:${email}`);
     if (exists) return res.status(409).json({ error: 'email already registered' });
-    const hash = await bcrypt.hash(password, 10);
+
+    // ユーザー作成
+    const hash   = await bcrypt.hash(password, 10);
     const userId = randomUUID();
     await redis.set(`user:${email}`, JSON.stringify({ userId, email, passwordHash: hash }));
+
+    // 声紋保存
+    await redis.set(`voiceprint:${userId}`, JSON.stringify({
+      vector:    embedding,
+      count:     1,
+      updatedAt: new Date().toISOString(),
+    }));
+
     const token = jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ token, email });
+    res.json({ token, email, message: '登録完了 — 声紋を記録しました' });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
