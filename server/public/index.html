@@ -98,7 +98,27 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
   <input class="input" type="password" id="authPassword" placeholder="パスワード">
   <div class="auth-err" id="authErr"></div>
   <button class="btn btn-auth" onclick="doLogin()">ログイン</button>
-  <button class="btn btn-sub" onclick="doSignup()" style="margin-top:8px">新規登録</button>
+  <button class="btn btn-sub" onclick="showSignupVoice()" style="margin-top:8px">新規登録</button>
+</div>
+
+<!-- 新規登録: 声紋録音ステップ -->
+<div id="signupArea" class="card hidden">
+  <h2>新規登録 — 声紋を登録</h2>
+  <input class="input" type="email" id="signupEmail" placeholder="メールアドレス">
+  <input class="input" type="password" id="signupPassword" placeholder="パスワード">
+  <div style="background:#0d0d1a;border-radius:10px;padding:14px;margin-top:12px">
+    <div style="font-size:11px;color:#5b8dee;letter-spacing:1px;margin-bottom:8px">以下の文字を読み上げてください</div>
+    <div id="challengeText" style="font-size:22px;font-weight:700;color:#e8c96e;letter-spacing:4px;text-align:center;padding:10px">— 読み込み中 —</div>
+    <div style="font-size:11px;color:#555;text-align:center;margin-top:4px" id="challengeTimer"></div>
+  </div>
+  <canvas class="waveform" id="wfSignup" style="margin-top:12px"></canvas>
+  <button class="btn btn-rec" id="rbSignup" onclick="toggleRecSignup()">● 録音開始</button>
+  <div class="status" id="stSignup"></div>
+  <div class="tlabel">TRANSCRIPT</div>
+  <div class="tbox" id="trSignup"><span style="color:#444">録音すると文字が出ます</span></div>
+  <div class="auth-err" id="signupErr"></div>
+  <button class="btn btn-auth hidden" id="signupSubmitBtn" onclick="doSignup()" style="margin-top:12px">声紋を登録してアカウント作成</button>
+  <button class="btn btn-sub" onclick="backToLogin()" style="margin-top:8px">戻る</button>
 </div>
 
 <!-- ログイン後のユーザーバー -->
@@ -247,17 +267,90 @@ async function doLogin() {
   localStorage.setItem('vp_email', data.email);
   showMain(data.email);
 }
+// 新規登録: 声紋録音ステップへ
+let signupChallenge = null;   // { challengeId, text }
+let signupVoice     = null;   // 録音後の { embedding, transcript }
+let challengeTimerInterval = null;
+
+async function showSignupVoice() {
+  document.getElementById('authArea').classList.add('hidden');
+  document.getElementById('signupArea').classList.remove('hidden');
+  // メール・パスワードを引き継ぐ
+  document.getElementById('signupEmail').value    = document.getElementById('authEmail').value;
+  document.getElementById('signupPassword').value = document.getElementById('authPassword').value;
+  signupVoice = null;
+  document.getElementById('signupSubmitBtn').classList.add('hidden');
+  document.getElementById('signupErr').textContent = '';
+  await fetchSignupChallenge();
+}
+
+async function fetchSignupChallenge() {
+  const el = document.getElementById('challengeText');
+  const timerEl = document.getElementById('challengeTimer');
+  el.textContent = '読み込み中...';
+  clearInterval(challengeTimerInterval);
+  try {
+    const res  = await fetch('/api/auth/challenge');
+    const data = await res.json();
+    signupChallenge = { challengeId: data.challengeId, text: data.text };
+    el.textContent = data.text;
+    // カウントダウン
+    let remaining = data.expiresIn;
+    timerEl.textContent = `残り ${remaining}秒`;
+    challengeTimerInterval = setInterval(async () => {
+      remaining--;
+      timerEl.textContent = `残り ${remaining}秒`;
+      if (remaining <= 0) {
+        clearInterval(challengeTimerInterval);
+        await fetchSignupChallenge();  // 期限切れで自動更新
+      }
+    }, 1000);
+  } catch(e) {
+    el.textContent = '取得失敗';
+  }
+}
+
+function backToLogin() {
+  clearInterval(challengeTimerInterval);
+  document.getElementById('signupArea').classList.add('hidden');
+  document.getElementById('authArea').classList.remove('hidden');
+}
+
+let recSignup = null;
+function toggleRecSignup() { recSignup?.toggle(); }
+
 async function doSignup() {
-  const email = document.getElementById('authEmail').value.trim();
-  const password = document.getElementById('authPassword').value;
-  const err = document.getElementById('authErr');
+  if (!signupVoice || !signupChallenge) return;
+  const email    = document.getElementById('signupEmail').value.trim();
+  const password = document.getElementById('signupPassword').value;
+  const err      = document.getElementById('signupErr');
   err.textContent = '';
-  const res = await fetch('/api/signup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
+  const btn = document.getElementById('signupSubmitBtn');
+  btn.disabled = true; btn.textContent = '登録中...';
+  clearInterval(challengeTimerInterval);
+
+  const res = await fetch('/api/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email, password,
+      embedding:   signupVoice.embedding,
+      challengeId: signupChallenge.challengeId,
+      transcript:  signupVoice.transcript,
+    }),
+  });
   const data = await res.json();
-  if (data.error) { err.textContent = data.error; return; }
+  if (data.error) {
+    err.textContent = data.error;
+    btn.disabled = false; btn.textContent = '声紋を登録してアカウント作成';
+    // チャレンジ期限切れならリフレッシュ
+    if (data.error.includes('チャレンジ')) await fetchSignupChallenge();
+    return;
+  }
   authToken = data.token;
   localStorage.setItem('vp_token', authToken);
   localStorage.setItem('vp_email', data.email);
+  document.getElementById('signupArea').classList.add('hidden');
   showMain(data.email);
 }
 function doLogout() {
@@ -440,6 +533,18 @@ function makeRecorder({wf,btn,st,tr},onStop){
   }
   return {toggle:()=>rec?stop():start()};
 }
+
+// ══════════════════════════════════════════════════
+//  新規登録用レコーダー (makeRecorder定義後に初期化)
+// ══════════════════════════════════════════════════
+recSignup = makeRecorder({wf:'wfSignup',btn:'rbSignup',st:'stSignup',tr:'trSignup'}, async (decoded, transcript) => {
+  document.getElementById('stSignup').textContent = '特徴抽出中...';
+  const voice = await extractVoice(decoded);
+  if (!voice) return;
+  signupVoice = { embedding: voice.embedding, transcript };
+  document.getElementById('stSignup').textContent = '声紋取得完了 ✓';
+  document.getElementById('signupSubmitBtn').classList.remove('hidden');
+});
 
 // ══════════════════════════════════════════════════
 //  STEP 1 録音
