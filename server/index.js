@@ -97,16 +97,8 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ error: 'challengeId required — GET /api/auth/challenge で取得してください' });
 
     // チャレンジ検証
-    const expectedText = await redis.get(`challenge:${challengeId}`);
-    if (!expectedText)
-      return res.status(401).json({ error: 'チャレンジが無効または期限切れです' });
-
-    const expectedNum = expectedText.match(/\d+/)?.[0] ?? '';
-    const actualNum   = (transcript ?? '').replace(/\s/g, '').match(/\d+/)?.[0] ?? '';
-    if (expectedNum && actualNum !== expectedNum)
-      return res.status(401).json({ error: `読み上げ内容が一致しません (期待: "${expectedText}")` });
-
-    await redis.del(`challenge:${challengeId}`);
+    const challengeErr = await validateChallenge(challengeId, transcript);
+    if (challengeErr) return res.status(401).json({ error: challengeErr });
 
     // ユーザー重複チェック
     const exists = await redis.get(`user:${email}`);
@@ -284,23 +276,69 @@ app.get('/api/embedding/:hash', authRequired, async (req, res) => {
 // ── GET /api/auth/challenge ───────────────────────────────
 // ログイン時に読み上げさせるランダム文字列を発行する
 // 有効期限: 90秒。期限切れ or 未使用なら verify で弾く
+// 3文字以上・音が被らない単語に絞る
 const CHALLENGE_WORDS = [
-  'さくら','うみ','かぜ','ひかり','つき','ほし','やま','かわ','もり','そら',
-  'あさ','ゆき','はな','くも','なみ','とり','いわ','いけ','みず','たに',
+  'さくら','ひかり','かがみ','そらまめ','つきみ','こだま',
+  'なつかぜ','しろくま','あおぞら','きつねび','うみかぜ','やまびこ',
 ];
 
+// 数字は1桁×3つに分けて読ませる (「さん・はち・いち」形式)
+// 音声認識が4桁をひらがな/漢字に変換するのを回避
 function makeChallenge() {
   const pick = () => CHALLENGE_WORDS[Math.floor(Math.random() * CHALLENGE_WORDS.length)];
-  const num  = String(Math.floor(1000 + Math.random() * 9000));
-  return `${pick()} ${num} ${pick()}`;   // 例: "さくら 7429 ながれ"
+  const d = () => Math.floor(Math.random() * 10);
+  const digits = [d(), d(), d()];   // 例: [3, 8, 1]
+  const text   = `${pick()} ${digits.join(' ')} ${pick()}`;  // "さくら 3 8 1 ひかり"
+  return { text, digits };
+}
+
+// 日本語数字→算用数字 変換マップ
+const JP_NUM = { 'ゼロ':0,'零':0,'〇':0,'○':0,'まる':0,
+  'いち':1,'一':1,'ひと':1,'に':2,'二':2,'さん':3,'三':3,
+  'し':4,'四':4,'よん':4,'よ':4,'ご':5,'五':5,
+  'ろく':6,'六':6,'なな':7,'七':7,'しち':7,
+  'はち':8,'八':8,'きゅう':9,'九':9,'く':9, };
+
+function extractDigits(transcript) {
+  if (!transcript) return [];
+  // まず算用数字を抽出
+  const arabicMatches = transcript.match(/[0-9]/g);
+  if (arabicMatches && arabicMatches.length >= 3) return arabicMatches.map(Number);
+  // ひらがな/漢字数字を変換
+  const result = [];
+  // 単語境界でマッチ
+  for (const [word, num] of Object.entries(JP_NUM)) {
+    if (transcript.includes(word)) result.push({ pos: transcript.indexOf(word), num });
+  }
+  return result.sort((a,b) => a.pos - b.pos).map(r => r.num);
 }
 
 app.get('/api/auth/challenge', async (req, res) => {
-  const challengeId = randomUUID();
-  const text        = makeChallenge();
-  await redis.set(`challenge:${challengeId}`, text, 'EX', 90);  // 90秒有効
+  const challengeId  = randomUUID();
+  const { text, digits } = makeChallenge();
+  await redis.set(`challenge:${challengeId}`, JSON.stringify({ text, digits }), 'EX', 90);
   res.json({ challengeId, text, expiresIn: 90 });
 });
+
+// ── チャレンジ検証ヘルパー ────────────────────────────────
+// 成功時は null、失敗時はエラーメッセージを返す
+async function validateChallenge(challengeId, transcript) {
+  const raw = await redis.get(`challenge:${challengeId}`);
+  if (!raw) return 'チャレンジが無効または期限切れです (90秒以内に読み上げてください)';
+
+  const { text, digits } = JSON.parse(raw);
+  const spoken = extractDigits(transcript);
+
+  if (spoken.length < digits.length)
+    return `数字が読み取れませんでした。「${text}」をはっきり読み上げてください (認識: "${transcript ?? ''}")`;
+
+  const matched = digits.every((d, i) => spoken[i] === d);
+  if (!matched)
+    return `数字が一致しません。「${text}」をそのまま読み上げてください (認識した数字: ${spoken.join(' ')})`;
+
+  await redis.del(`challenge:${challengeId}`);
+  return null;
+}
 
 // ── POST /api/auth/verify ─────────────────────────────────
 // チャレンジ文字列を読んだ音声で声紋認証 → JWT 発行
@@ -372,21 +410,9 @@ app.post('/api/enroll', authRequired, async (req, res) => {
     if (!challengeId)
       return res.status(400).json({ error: 'challengeId required — GET /api/auth/challenge で取得してください' });
 
-    // チャレンジの有効性確認
-    const expectedText = await redis.get(`challenge:${challengeId}`);
-    if (!expectedText)
-      return res.status(401).json({ error: 'チャレンジが無効または期限切れです' });
-
-    // 数字部分の一致チェック
-    const expectedNum = expectedText.match(/\d+/)?.[0] ?? '';
-    const actualNum   = (transcript ?? '').replace(/\s/g, '').match(/\d+/)?.[0] ?? '';
-    if (expectedNum && actualNum !== expectedNum)
-      return res.status(401).json({
-        error: `読み上げ内容が一致しません (期待: "${expectedText}")`,
-      });
-
-    // 使用済みチャレンジを削除
-    await redis.del(`challenge:${challengeId}`);
+    // チャレンジ検証
+    const challengeErr = await validateChallenge(challengeId, transcript);
+    if (challengeErr) return res.status(401).json({ error: challengeErr });
 
     const key = `voiceprint:${req.user.userId}`;
     const existing = await redis.get(key);
