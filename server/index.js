@@ -333,13 +333,31 @@ app.post('/api/auth/verify', async (req, res) => {
 });
 
 // ── POST /api/enroll ──────────────────────────────────────
-// 声紋を登録する (embedding は iOS MFCCExtractor が生成した配列)
+// 声紋を登録する (チャレンジ文字列の読み上げ必須)
 // 複数回登録すると平均ベクトルで更新される (少なくとも3回推奨)
 app.post('/api/enroll', authRequired, async (req, res) => {
   try {
-    const { embedding } = req.body;
+    const { embedding, challengeId, transcript } = req.body;
     if (!Array.isArray(embedding) || embedding.length === 0)
       return res.status(400).json({ error: 'embedding (array) required' });
+    if (!challengeId)
+      return res.status(400).json({ error: 'challengeId required — GET /api/auth/challenge で取得してください' });
+
+    // チャレンジの有効性確認
+    const expectedText = await redis.get(`challenge:${challengeId}`);
+    if (!expectedText)
+      return res.status(401).json({ error: 'チャレンジが無効または期限切れです' });
+
+    // 数字部分の一致チェック
+    const expectedNum = expectedText.match(/\d+/)?.[0] ?? '';
+    const actualNum   = (transcript ?? '').replace(/\s/g, '').match(/\d+/)?.[0] ?? '';
+    if (expectedNum && actualNum !== expectedNum)
+      return res.status(401).json({
+        error: `読み上げ内容が一致しません (期待: "${expectedText}")`,
+      });
+
+    // 使用済みチャレンジを削除
+    await redis.del(`challenge:${challengeId}`);
 
     const key = `voiceprint:${req.user.userId}`;
     const existing = await redis.get(key);

@@ -76,12 +76,23 @@ enum VoiceProofAPI {
     }
 
     // MARK: 声紋登録
-    /// iOS の VoiceprintResult を /api/enroll に送信する
-    static func enroll(result: VoiceprintResult) async throws -> (sampleCount: Int, message: String) {
-        let embedding = result.meanMFCC + result.stdMFCC   // 26次元
+    /// チャレンジ文字列を読み上げた録音で声紋を登録する
+    /// - Parameters:
+    ///   - challengeId: fetchChallenge() で取得した ID
+    ///   - transcript:  読み上げた文字列の音声認識結果
+    static func enroll(
+        result:      VoiceprintResult,
+        challengeId: String,
+        transcript:  String
+    ) async throws -> (sampleCount: Int, message: String) {
+        let embedding = result.meanMFCC + result.stdMFCC
         return try await _post(
             path: "/api/enroll",
-            body: ["embedding": embedding],
+            body: [
+                "embedding":   embedding,
+                "challengeId": challengeId,
+                "transcript":  transcript,
+            ],
             parse: { json in
                 let count   = json["sampleCount"] as? Int    ?? 0
                 let message = json["message"]     as? String ?? ""
@@ -363,10 +374,19 @@ enum TamperingIssue {
  VoiceProofAPI.baseURL  = "https://your-server.railway.app"
  VoiceProofAPI.jwtToken = authToken   // ログイン後のJWT
 
+ // 1. チャレンジ取得 → 画面に表示
+ let challenge = try await VoiceProofAPI.fetchChallenge()
+ showText(challenge.text)   // 例: "さくら 7429 ながれ" を表示
+
+ // 2. 録音 → enroll
  let recorder = VoiceprintRecorder()
  recorder.onComplete = { voiceprint in
      Task {
-         let (count, msg) = try await VoiceProofAPI.enroll(result: voiceprint)
+         let (count, msg) = try await VoiceProofAPI.enroll(
+             result:      voiceprint,
+             challengeId: challenge.challengeId,
+             transcript:  recognizedText    // 音声認識結果
+         )
          print("登録完了: \(msg) (サンプル数: \(count))")
      }
  }
