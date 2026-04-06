@@ -277,20 +277,11 @@ app.get('/api/embedding/:hash', authRequired, async (req, res) => {
 // ログイン時に読み上げさせるランダム文字列を発行する
 // 有効期限: 90秒。期限切れ or 未使用なら verify で弾く
 // 3文字以上・音が被らない単語に絞る
-// 数字読みと被らない単語のみ使用 (に/ご/さん/はち等を含まない)
-const CHALLENGE_WORDS = [
-  'さくら','あおぞら','しろくま','やまびこ',
-  'たいよう','かすみ','つばさ','ほたる',
-  'あらしま','とまれ','すだち','わたぐも',
-];
-
-// 数字は1桁×3つに分けて読ませる (「さん・はち・いち」形式)
-// 音声認識が4桁をひらがな/漢字に変換するのを回避
+// 数字4桁をスペース区切りで読ませる (例: "3 8 1 5")
+// 単語を混ぜると漢字変換の影響を受けるため数字のみに統一
 function makeChallenge() {
-  const pick = () => CHALLENGE_WORDS[Math.floor(Math.random() * CHALLENGE_WORDS.length)];
-  const d = () => Math.floor(Math.random() * 10);
-  const digits = [d(), d(), d()];   // 例: [3, 8, 1]
-  const text   = `${pick()} ${digits.join(' ')} ${pick()}`;  // "さくら 3 8 1 ひかり"
+  const digits = Array.from({length: 4}, () => Math.floor(Math.random() * 10));
+  const text   = digits.join(' ');   // "3 8 1 5"
   return { text, digits };
 }
 
