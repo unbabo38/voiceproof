@@ -624,12 +624,13 @@ async function startPayment(){
   try {
     const res=await fetch('/api/pay',{
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:{'Content-Type':'application/json', 'Authorization':`Bearer ${authToken}`},
       body:JSON.stringify({
         voiceHash:  currentVoice.hash,
         timestamp:  Math.floor(Date.now()/1000),
         transcript: currentVoice.transcript||'',
         pitch:      Math.round(currentVoice.pitch||0),
+        embedding:  JSON.stringify(currentVoice.embedding),
       })
     });
     const data=await res.json();
@@ -682,10 +683,11 @@ async function devPay(){
 
   const res=await fetch('/api/pay/dev',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json', 'Authorization':`Bearer ${authToken}`},
     body:JSON.stringify({
       voiceHash: currentVoice.hash,
       timestamp: Math.floor(Date.now()/1000),
+      embedding: JSON.stringify(currentVoice.embedding),
     })
   });
   const data=await res.json();

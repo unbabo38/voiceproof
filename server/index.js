@@ -179,10 +179,22 @@ app.post('/api/upload', authRequired, upload.single('audio'), async (req, res) =
 
 // ── POST /api/pay ────────────────────────────────────────
 // フロントから voiceHash・位置・時刻を受け取り PaymentIntent を作成
-app.post('/api/pay', payLimiter, async (req, res) => {
+app.post('/api/pay', payLimiter, authRequired, async (req, res) => {
   try {
-    const { voiceHash, timestamp, latitude = 0, longitude = 0, transcript = '' } = req.body;
+    const { voiceHash, timestamp, latitude = 0, longitude = 0, transcript = '', embedding } = req.body;
     if (!voiceHash) return res.status(400).json({ error: 'voiceHash required' });
+
+    // 声紋照合: 登録済み声紋と一致しない音声は記録不可
+    const vpRaw = await redis.get(`voiceprint:${req.user.userId}`);
+    if (!vpRaw) return res.status(403).json({ error: '声紋が未登録です。アカウント設定から声紋を登録してください' });
+    if (!embedding) return res.status(400).json({ error: 'embedding required — 声紋の照合ができません' });
+
+    const { vector } = JSON.parse(vpRaw);
+    const similarity = cosineSimilarity(vector, JSON.parse(embedding));
+    if (similarity < 0.82) return res.status(403).json({
+      error: `声紋が一致しません (類似度: ${(similarity*100).toFixed(1)}%) — ご本人の声で録音してください`,
+      similarity: Math.round(similarity * 10000) / 10000,
+    });
 
     // 既に記録済みかチェック (二重課金防止)
     const hashBytes = toBytes32(voiceHash);
@@ -220,10 +232,20 @@ app.post('/api/pay', payLimiter, async (req, res) => {
 
 // ── POST /api/pay/dev ────────────────────────────────────
 // Stripe スキップ用テストエンドポイント
-app.post('/api/pay/dev', async (req, res) => {
+app.post('/api/pay/dev', authRequired, async (req, res) => {
   try {
-    const { voiceHash, timestamp } = req.body;
+    const { voiceHash, timestamp, embedding } = req.body;
     if (!voiceHash) return res.status(400).json({ error: 'voiceHash required' });
+
+    const vpRaw = await redis.get(`voiceprint:${req.user.userId}`);
+    if (!vpRaw) return res.status(403).json({ error: '声紋が未登録です' });
+    if (!embedding) return res.status(400).json({ error: 'embedding required' });
+    const { vector } = JSON.parse(vpRaw);
+    const similarity = cosineSimilarity(vector, JSON.parse(embedding));
+    if (similarity < 0.82) return res.status(403).json({
+      error: `声紋が一致しません (類似度: ${(similarity*100).toFixed(1)}%) — ご本人の声で録音してください`,
+    });
+
     const intentId = 'dev_' + Date.now();
     await submitToChain(intentId, { voiceHash, timestamp, latitude: 0, longitude: 0 });
     const raw = await redis.get(`results:${intentId}`);
