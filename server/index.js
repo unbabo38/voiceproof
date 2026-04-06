@@ -277,9 +277,11 @@ app.get('/api/embedding/:hash', authRequired, async (req, res) => {
 // ログイン時に読み上げさせるランダム文字列を発行する
 // 有効期限: 90秒。期限切れ or 未使用なら verify で弾く
 // 3文字以上・音が被らない単語に絞る
+// 数字読みと被らない単語のみ使用 (に/ご/さん/はち等を含まない)
 const CHALLENGE_WORDS = [
-  'さくら','ひかり','かがみ','そらまめ','つきみ','こだま',
-  'なつかぜ','しろくま','あおぞら','きつねび','うみかぜ','やまびこ',
+  'さくら','あおぞら','しろくま','やまびこ',
+  'たいよう','かすみ','つばさ','ほたる',
+  'あらしま','とまれ','すだち','わたぐも',
 ];
 
 // 数字は1桁×3つに分けて読ませる (「さん・はち・いち」形式)
@@ -292,25 +294,28 @@ function makeChallenge() {
   return { text, digits };
 }
 
-// 日本語数字→算用数字 変換マップ
-const JP_NUM = { 'ゼロ':0,'零':0,'〇':0,'○':0,'まる':0,
-  'いち':1,'一':1,'ひと':1,'に':2,'二':2,'さん':3,'三':3,
-  'し':4,'四':4,'よん':4,'よ':4,'ご':5,'五':5,
-  'ろく':6,'六':6,'なな':7,'七':7,'しち':7,
-  'はち':8,'八':8,'きゅう':9,'九':9,'く':9, };
+// 日本語数字→算用数字 変換 (長い語から順に適用して誤変換を防ぐ)
+const JP_NUM_REPLACEMENTS = [
+  // かな (長い語を先に)
+  ['きゅう','9'],['ゼロ','0'],['まる','0'],['いち','1'],
+  ['さん','3'],['よん','4'],['ろく','6'],['なな','7'],['しち','7'],['はち','8'],
+  // かな単体 (短いので後回し)
+  ['に','2'],['ご','5'],
+  // 漢字
+  ['零','0'],['〇','0'],['一','1'],['二','2'],['三','3'],
+  ['四','4'],['五','5'],['六','6'],['七','7'],['八','8'],['九','9'],
+  // 全角数字
+  ['０','0'],['１','1'],['２','2'],['３','3'],['４','4'],
+  ['５','5'],['６','6'],['７','7'],['８','8'],['９','9'],
+];
 
 function extractDigits(transcript) {
   if (!transcript) return [];
-  // まず算用数字を抽出
-  const arabicMatches = transcript.match(/[0-9]/g);
-  if (arabicMatches && arabicMatches.length >= 3) return arabicMatches.map(Number);
-  // ひらがな/漢字数字を変換
-  const result = [];
-  // 単語境界でマッチ
-  for (const [word, num] of Object.entries(JP_NUM)) {
-    if (transcript.includes(word)) result.push({ pos: transcript.indexOf(word), num });
+  let text = transcript.normalize('NFKC');
+  for (const [word, digit] of JP_NUM_REPLACEMENTS) {
+    text = text.replaceAll(word, digit);
   }
-  return result.sort((a,b) => a.pos - b.pos).map(r => r.num);
+  return (text.match(/[0-9]/g) || []).map(Number);
 }
 
 app.get('/api/auth/challenge', async (req, res) => {
