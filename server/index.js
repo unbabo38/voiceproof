@@ -299,11 +299,13 @@ app.get('/api/embedding/:hash', authRequired, async (req, res) => {
 // ログイン時に読み上げさせるランダム文字列を発行する
 // 有効期限: 90秒。期限切れ or 未使用なら verify で弾く
 // 3文字以上・音が被らない単語に絞る
-// 数字4桁をスペース区切りで読ませる (例: "3 8 1 5")
-// 単語を混ぜると漢字変換の影響を受けるため数字のみに統一
+// 数字6桁 + 固定フレーズ
+// 数字: 照合に使う / フレーズ: 発話量を増やして声紋の精度を上げるため
+const VOICEPRINT_PHRASE = 'ただいま声紋を登録しています';
+
 function makeChallenge() {
-  const digits = Array.from({length: 4}, () => Math.floor(Math.random() * 10));
-  const text   = digits.join(' ');   // "3 8 1 5"
+  const digits = Array.from({length: 6}, () => Math.floor(Math.random() * 10));
+  const text   = `${digits.join(' ')} ${VOICEPRINT_PHRASE}`;
   return { text, digits };
 }
 
