@@ -176,6 +176,34 @@ h1  { font-size: 26px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px
   <div id="blockContent"></div>
 </div>
 
+<!-- ディープフェイクチェック (誰でも使える) -->
+<div class="card" id="fakeCheckCard">
+  <h2>🔍 AI音声チェック — 無料</h2>
+  <p style="font-size:12px;color:#888;margin-bottom:12px">音声ファイルをアップロードして、AI生成かどうかを判定します</p>
+  <input type="file" id="fakeCheckFile" accept=".wav,.mp3,.webm,.ogg,.m4a,.flac"
+    style="display:none" onchange="runFakeCheck()">
+  <button class="btn btn-sub" onclick="document.getElementById('fakeCheckFile').click()">
+    📂 音声ファイルを選択
+  </button>
+  <div class="status" id="fakeCheckStatus"></div>
+  <div id="fakeCheckResult" class="hidden" style="margin-top:14px">
+    <div class="field">
+      <div class="flabel">判定</div>
+      <div class="fval big" id="fakeVerdict">—</div>
+    </div>
+    <div class="field">
+      <div class="flabel">AI生成スコア</div>
+      <div style="font-size:20px;font-weight:700;margin:5px 0" id="fakePct">—</div>
+      <div class="sim-bg"><div class="sim-fill" id="fakeBar" style="width:0%"></div></div>
+      <div style="font-size:11px;color:#555;margin-top:4px" id="fakeConfidence">—</div>
+    </div>
+    <div class="field hidden" id="fakeDetailWrap">
+      <div class="flabel">特徴量スコア</div>
+      <div id="fakeDetails" style="font-size:11px;color:#888;line-height:2"></div>
+    </div>
+  </div>
+</div>
+
 <!-- STEP 3 認証 -->
 <div class="card hidden" id="authCard">
   <h2>STEP 3 — 声で認証</h2>
@@ -739,6 +767,61 @@ const rec2=makeRecorder({wf:'wf2',btn:'rb2',st:'st2',tr:'tr2'},async decoded=>{
   document.getElementById('rb2').textContent='● もう一度試す';
 });
 function toggleRec2(){rec2.toggle();}
+
+// ══════════════════════════════════════════════════
+//  AI音声チェック
+// ══════════════════════════════════════════════════
+const FEATURE_LABELS = {
+  spectral_flatness: 'スペクトル平坦度',
+  pitch_consistency: 'ピッチ一貫性',
+  mfcc_variation:    'MFCC変動',
+  formant_stability: 'フォルマント安定性',
+  silence_pattern:   '無音パターン',
+  zcr_distribution:  'ゼロ交差率分布',
+};
+
+async function runFakeCheck() {
+  const file = document.getElementById('fakeCheckFile').files[0];
+  if (!file) return;
+  const status = document.getElementById('fakeCheckStatus');
+  const result = document.getElementById('fakeCheckResult');
+  result.classList.add('hidden');
+  status.textContent = '解析中...';
+
+  const formData = new FormData();
+  formData.append('audio', file);
+
+  try {
+    const res  = await fetch('/api/check-deepfake', {
+      method: 'POST',
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      body: formData,
+    });
+    const data = await res.json();
+    if (data.error) { status.textContent = data.error; return; }
+
+    const pct  = Math.round(data.score * 100);
+    const fake = data.is_fake;
+    document.getElementById('fakeVerdict').innerHTML = fake
+      ? `🤖 AI生成の疑い <span class="badge ng">FAKE</span>`
+      : `✅ 本物の音声 <span class="badge ok">REAL</span>`;
+    document.getElementById('fakePct').textContent   = pct + '%';
+    document.getElementById('fakeBar').style.width   = pct + '%';
+    document.getElementById('fakeConfidence').textContent =
+      `信頼度: ${data.confidence} | 閾値: ${Math.round(data.threshold*100)}%`;
+
+    // 特徴量詳細
+    if (data.features) {
+      document.getElementById('fakeDetailWrap').classList.remove('hidden');
+      document.getElementById('fakeDetails').innerHTML = Object.entries(data.features)
+        .map(([k,v]) => `${FEATURE_LABELS[k]||k}: ${Math.round(v*100)}%`).join('<br>');
+    }
+    status.textContent = '';
+    result.classList.remove('hidden');
+  } catch(e) {
+    status.textContent = 'エラー: ' + e.message;
+  }
+}
 
 // ══════════════════════════════════════════════════
 //  過去の記録

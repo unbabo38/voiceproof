@@ -499,6 +499,49 @@ function cosineSimilarity(a, b) {
   return denom === 0 ? 0 : Math.max(0, Math.min(1, dot / denom));
 }
 
+// ── POST /api/check-deepfake ──────────────────────────────
+// 誰でも使える無料のAI音声チェック
+// 認証済みユーザーは自分の声紋との照合結果も返す
+app.post('/api/check-deepfake', upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'audio file required' });
+
+    const DEEPFAKE_API = process.env.DEEPFAKE_API_URL || 'http://localhost:8000';
+
+    // Python マイクロサービスに転送
+    const formData = new FormData();
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
+    formData.append('audio', blob, req.file.originalname || 'audio.wav');
+
+    const apiRes = await fetch(`${DEEPFAKE_API}/detect`, { method: 'POST', body: formData });
+    if (!apiRes.ok) {
+      const err = await apiRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err.detail || '解析サービスエラー' });
+    }
+    const detection = await apiRes.json();
+
+    // ログイン済みなら声紋照合も追加
+    let voiceprintMatch = null;
+    const token = (req.headers.authorization || '').replace('Bearer ', '');
+    if (token) {
+      try {
+        const { userId } = jwt.verify(token, JWT_SECRET);
+        const vpRaw = await redis.get(`voiceprint:${userId}`);
+        if (vpRaw && req.body.embedding) {
+          const { vector } = JSON.parse(vpRaw);
+          const embedding  = JSON.parse(req.body.embedding);
+          const similarity = cosineSimilarity(vector, embedding);
+          voiceprintMatch  = { similarity: Math.round(similarity * 10000) / 10000, isMatch: similarity >= 0.82 };
+        }
+      } catch { /* トークン無効はスキップ */ }
+    }
+
+    res.json({ ...detection, voiceprintMatch });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/proof/:hash ─────────────────────────────────
 app.get('/api/proof/:hash', async (req, res) => {
   try {
