@@ -330,22 +330,28 @@ async function doSignup() {
   btn.disabled = true; btn.textContent = '登録中...';
   clearInterval(challengeTimerInterval);
 
-  const res = await fetch('/api/signup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email, password,
-      embedding:   signupVoice.embedding,
-      challengeId: signupChallenge.challengeId,
-      transcript:  signupVoice.transcript,
-    }),
-  });
-  const data = await res.json();
+  let data;
+  try {
+    const res = await fetch('/api/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email, password,
+        embedding:   signupVoice.embedding,
+        challengeId: signupChallenge.challengeId,
+        transcript:  signupVoice.transcript,
+      }),
+    });
+    data = await res.json();
+  } catch(e) {
+    err.textContent = 'サーバーに接続できませんでした';
+    btn.disabled = false; btn.textContent = '声紋を登録してアカウント作成';
+    return;
+  }
   if (data.error) {
     err.textContent = data.error;
     btn.disabled = false; btn.textContent = '声紋を登録してアカウント作成';
-    // チャレンジ期限切れならリフレッシュ
-    if (data.error.includes('チャレンジ')) await fetchSignupChallenge();
+    if (data.error.includes('チャレンジ') || data.error.includes('壊れ')) await fetchSignupChallenge();
     return;
   }
   authToken = data.token;

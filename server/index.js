@@ -319,10 +319,13 @@ app.get('/api/auth/challenge', async (req, res) => {
 // ── チャレンジ検証ヘルパー ────────────────────────────────
 // 成功時は null、失敗時はエラーメッセージを返す
 async function validateChallenge(challengeId, transcript) {
+  if (!challengeId) return 'challengeId がありません';
   const raw = await redis.get(`challenge:${challengeId}`);
   if (!raw) return 'チャレンジが無効または期限切れです (90秒以内に読み上げてください)';
 
-  const { text, digits } = JSON.parse(raw);
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return 'チャレンジデータが壊れています。もう一度お試しください'; }
+  const { text, digits } = parsed;
   const spoken = extractDigits(transcript);
 
   if (spoken.length < digits.length)
