@@ -508,7 +508,7 @@ function makeRecorder({wf,btn,st,tr},onStop){
     mr=new MediaRecorder(stream); chunks=[]; mr.ondataavailable=e=>chunks.push(e.data);
     mr.start(); rec=true; ft='';
     document.getElementById(tr).innerHTML='<span class="interim">聞き取り中...</span>';
-    sr=makeSR((f,interim)=>{ft=f;document.getElementById(tr).innerHTML=f+(interim?`<span class="interim">${interim}</span>`:'');});
+    sr=makeSR((f,interim)=>{if(f) ft=f; else if(interim && !ft) ft=interim; document.getElementById(tr).innerHTML=(ft||interim)+(interim && ft!==interim?`<span class="interim">${interim}</span>`:'');});
     if(sr) sr.start();
     document.getElementById(btn).classList.add('on');
     document.getElementById(st).textContent='録音中...';
