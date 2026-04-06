@@ -11,6 +11,7 @@ import multer from 'multer';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
+import wav from 'node-wav';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app    = express();
@@ -487,6 +488,123 @@ app.get('/api/voiceprint/status', authRequired, async (req, res) => {
   res.json({ enrolled: true, sampleCount: count, updatedAt, ready: count >= 3 });
 });
 
+// ══════════════════════════════════════════════════════════
+//  ディープフェイク検出エンジン (Pure JS)
+// ══════════════════════════════════════════════════════════
+
+function fftInPlace(re, im) {
+  const n = re.length;
+  for (let i=1,j=0;i<n;i++){
+    let b=n>>1;for(;j&b;b>>=1)j^=b;j^=b;
+    if(i<j){[re[i],re[j]]=[re[j],re[i]];[im[i],im[j]]=[im[j],im[i]];}
+  }
+  for(let l=2;l<=n;l<<=1){
+    const a=-2*Math.PI/l,wR=Math.cos(a),wI=Math.sin(a);
+    for(let i=0;i<n;i+=l){
+      let cR=1,cI=0;
+      for(let j=0;j<l/2;j++){
+        const uR=re[i+j],uI=im[i+j];
+        const vR=re[i+j+l/2]*cR-im[i+j+l/2]*cI;
+        const vI=re[i+j+l/2]*cI+im[i+j+l/2]*cR;
+        re[i+j]=uR+vR;im[i+j]=uI+vI;
+        re[i+j+l/2]=uR-vR;im[i+j+l/2]=uI-vI;
+        [cR,cI]=[cR*wR-cI*wI,cR*wI+cI*wR];
+      }
+    }
+  }
+}
+
+function powerSpectrum(frame) {
+  const n = frame.length;
+  const re = frame.map((v,i) => v*(0.54-0.46*Math.cos(2*Math.PI*i/(n-1))));
+  const im = new Array(n).fill(0);
+  fftInPlace(re, im);
+  return re.slice(0,n/2).map((r,i) => r*r + im[i]*im[i]);
+}
+
+function analyzeDeepfake(buffer) {
+  let result;
+  try { result = wav.decode(buffer); } catch { return null; }
+  let samples = result.channelData[0];
+  const sr = result.sampleRate;
+
+  const maxVal = Math.max(...samples.map(Math.abs));
+  if (maxVal > 0) samples = samples.map(v => v / maxVal);
+
+  const frameSize = 1024, hop = 512;
+  const frames = [];
+  for (let i = 0; i + frameSize <= samples.length; i += hop) {
+    frames.push(Array.from(samples.slice(i, i + frameSize)));
+  }
+  if (frames.length < 5) return null;
+
+  const spectra = frames.map(powerSpectrum);
+
+  // 1. スペクトル平坦度 (TTS は均一になりやすい)
+  const flatness = spectra.map(ps => {
+    const logMean = ps.reduce((s,v) => s + Math.log(Math.max(v,1e-10)), 0) / ps.length;
+    const ariMean = ps.reduce((s,v) => s + v, 0) / ps.length;
+    return Math.exp(logMean) / (ariMean + 1e-10);
+  });
+  const flatScore = Math.min(1, (flatness.reduce((a,b)=>a+b,0)/flatness.length) * 10);
+
+  // 2. スペクトル重心の安定性 (TTS はフォルマントが過度に安定)
+  const centroids = spectra.map(ps => {
+    const total = ps.reduce((s,v)=>s+v,0);
+    return ps.reduce((s,v,i)=>s+v*i,0) / (total+1e-10);
+  });
+  const centMean = centroids.reduce((a,b)=>a+b,0)/centroids.length;
+  const centCV = Math.sqrt(centroids.reduce((s,v)=>s+(v-centMean)**2,0)/centroids.length) / (centMean+1e-10);
+  const formantScore = Math.min(1, Math.max(0, 1 - centCV * 3));
+
+  // 3. ゼロ交差率の均一性 (TTS は分布が狭い)
+  const zcrs = frames.map(f => {
+    let zc = 0;
+    for (let i=1;i<f.length;i++) if (f[i]*f[i-1]<0) zc++;
+    return zc / f.length;
+  });
+  const zcrMean = zcrs.reduce((a,b)=>a+b,0)/zcrs.length;
+  const zcrCV = Math.sqrt(zcrs.reduce((s,v)=>s+(v-zcrMean)**2,0)/zcrs.length) / (zcrMean+1e-10);
+  const zcrScore = Math.min(1, Math.max(0, 1 - zcrCV * 2));
+
+  // 4. エネルギー変動 (TTS は息継ぎ・ポーズが均一)
+  const energies = frames.map(f => f.reduce((s,v)=>s+v*v,0)/f.length);
+  const eMean = energies.reduce((a,b)=>a+b,0)/energies.length;
+  const eCV = Math.sqrt(energies.reduce((s,v)=>s+(v-eMean)**2,0)/energies.length) / (eMean+1e-10);
+  const silenceScore = Math.min(1, Math.max(0, 1 - eCV));
+
+  // 5. 高周波均一性 (TTS は高域が均一)
+  const hfRatios = spectra.map(ps => {
+    const hf = ps.slice(Math.floor(ps.length*0.6));
+    const m = hf.reduce((a,b)=>a+b,0)/hf.length;
+    const sd = Math.sqrt(hf.reduce((s,v)=>s+(v-m)**2,0)/hf.length);
+    return sd / (m+1e-10);
+  });
+  const hfCV = hfRatios.reduce((a,b)=>a+b,0)/hfRatios.length;
+  const hfScore = Math.min(1, Math.max(0, 1 - hfCV));
+
+  const features = {
+    spectral_flatness: Math.round(flatScore    * 10000) / 10000,
+    formant_stability: Math.round(formantScore * 10000) / 10000,
+    zcr_distribution:  Math.round(zcrScore     * 10000) / 10000,
+    silence_pattern:   Math.round(silenceScore * 10000) / 10000,
+    hf_uniformity:     Math.round(hfScore      * 10000) / 10000,
+  };
+  const weights = { spectral_flatness:0.25, formant_stability:0.20, zcr_distribution:0.20, silence_pattern:0.15, hf_uniformity:0.20 };
+  const score = Object.entries(features).reduce((s,[k,v]) => s + v*(weights[k]||0), 0);
+  const THRESHOLD = 0.55;
+  const distance = Math.abs(score - THRESHOLD);
+
+  return {
+    score:      Math.round(score * 10000) / 10000,
+    is_fake:    score >= THRESHOLD,
+    threshold:  THRESHOLD,
+    confidence: distance > 0.15 ? 'high' : distance > 0.05 ? 'medium' : 'low',
+    label:      score >= THRESHOLD ? 'AI生成の疑い' : '本物の音声',
+    features,
+  };
+}
+
 // ── コサイン類似度 ────────────────────────────────────────
 function cosineSimilarity(a, b) {
   let dot = 0, normA = 0, normB = 0;
@@ -500,25 +618,14 @@ function cosineSimilarity(a, b) {
 }
 
 // ── POST /api/check-deepfake ──────────────────────────────
-// 誰でも使える無料のAI音声チェック
+// 誰でも使える無料のAI音声チェック (WAV のみ)
 // 認証済みユーザーは自分の声紋との照合結果も返す
 app.post('/api/check-deepfake', upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'audio file required' });
 
-    const DEEPFAKE_API = process.env.DEEPFAKE_API_URL || 'http://localhost:8000';
-
-    // Python マイクロサービスに転送
-    const formData = new FormData();
-    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
-    formData.append('audio', blob, req.file.originalname || 'audio.wav');
-
-    const apiRes = await fetch(`${DEEPFAKE_API}/detect`, { method: 'POST', body: formData });
-    if (!apiRes.ok) {
-      const err = await apiRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err.detail || '解析サービスエラー' });
-    }
-    const detection = await apiRes.json();
+    const detection = analyzeDeepfake(req.file.buffer);
+    if (!detection) return res.status(422).json({ error: 'WAVファイルを使用してください (対応: .wav)' });
 
     // ログイン済みなら声紋照合も追加
     let voiceprintMatch = null;
