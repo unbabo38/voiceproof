@@ -11,7 +11,6 @@ import multer from 'multer';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
-import wav from 'node-wav';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app    = express();
@@ -522,11 +521,42 @@ function powerSpectrum(frame) {
   return re.slice(0,n/2).map((r,i) => r*r + im[i]*im[i]);
 }
 
+function decodeWav(buffer) {
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const riff = String.fromCharCode(...buffer.slice(0, 4));
+  if (riff !== 'RIFF') return null;
+  let offset = 12;
+  let sr = 16000, bitsPerSample = 16, numChannels = 1, dataOffset = -1, dataLength = 0;
+  while (offset < buffer.length - 8) {
+    const chunkId = String.fromCharCode(...buffer.slice(offset, offset + 4));
+    const chunkSize = view.getUint32(offset + 4, true);
+    if (chunkId === 'fmt ') {
+      numChannels  = view.getUint16(offset + 10, true);
+      sr           = view.getUint32(offset + 12, true);
+      bitsPerSample = view.getUint16(offset + 22, true);
+    } else if (chunkId === 'data') {
+      dataOffset = offset + 8;
+      dataLength = chunkSize;
+      break;
+    }
+    offset += 8 + chunkSize;
+  }
+  if (dataOffset < 0) return null;
+  const samples = new Float32Array(dataLength / (bitsPerSample / 8) / numChannels);
+  const scale = bitsPerSample === 16 ? 32768 : bitsPerSample === 8 ? 128 : 1;
+  for (let i = 0; i < samples.length; i++) {
+    const pos = dataOffset + i * numChannels * (bitsPerSample / 8);
+    const raw = bitsPerSample === 16 ? view.getInt16(pos, true) : view.getUint8(pos) - 128;
+    samples[i] = raw / scale;
+  }
+  return { samples, sr };
+}
+
 function analyzeDeepfake(buffer) {
-  let result;
-  try { result = wav.decode(buffer); } catch { return null; }
-  let samples = result.channelData[0];
-  const sr = result.sampleRate;
+  const decoded = decodeWav(buffer);
+  if (!decoded) return null;
+  let samples = decoded.samples;
+  const sr = decoded.sr;
 
   const maxVal = Math.max(...samples.map(Math.abs));
   if (maxVal > 0) samples = samples.map(v => v / maxVal);
